@@ -65,6 +65,17 @@ jobs:
         if: matrix.args != null
         run: rustup target add $(echo "${{ matrix.args }}" | cut -d' ' -f2)
 
+      - name: Install WiX toolset (Windows ARM64)
+        if: matrix.platform == 'windows-11-arm'
+        shell: pwsh
+        run: |
+          $wixUrl = "https://github.com/wixtoolset/wix3/releases/download/wix3141rtm/wix314-binaries.zip"
+          $wixZip = "$env:TEMP\wix314.zip"
+          $wixDir = "$env:TEMP\wix314"
+          Invoke-WebRequest -Uri $wixUrl -OutFile $wixZip
+          Expand-Archive -Path $wixZip -DestinationPath $wixDir -Force
+          echo "WIX=$wixDir" | Out-File -FilePath $env:GITHUB_ENV -Append
+
       - name: Build the app
         uses: tauri-apps/tauri-action@v0
         env:
