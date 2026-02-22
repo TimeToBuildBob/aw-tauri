@@ -83,15 +83,20 @@ jobs:
           Expand-Archive -Path $wixZip -DestinationPath $wixDir -Force
           Write-Host "WiX installed to $wixDir ($(Get-ChildItem $wixDir | Measure-Object | Select-Object -Expand Count) files)"
 
-          # NSIS — zip extracts an NSIS/ folder into %LOCALAPPDATA%\tauri\
+          # NSIS — zip contains nsis-3.08/ which tauri renames to NSIS/
           $nsisUrl = "https://github.com/tauri-apps/binary-releases/releases/download/nsis-3/nsis-3.zip"
           $nsisZip = "$env:TEMP\nsis-3.zip"
+          $nsisDir = "$tauriTools\NSIS"
           Invoke-WebRequest -Uri $nsisUrl -OutFile $nsisZip
           Expand-Archive -Path $nsisZip -DestinationPath $tauriTools -Force
-          Write-Host "NSIS installed to $tauriTools\NSIS"
+          # Zip extracts as nsis-3.08/ but tauri expects NSIS/
+          if (Test-Path "$tauriTools\nsis-3.08") {
+            Rename-Item "$tauriTools\nsis-3.08" "NSIS"
+          }
+          Write-Host "NSIS installed to $nsisDir ($(Test-Path $nsisDir))"
 
           # NSIS tauri-utils plugin (downloaded separately by tauri-bundler)
-          $pluginDir = "$tauriTools\NSIS\Plugins\x86-unicode"
+          $pluginDir = "$nsisDir\Plugins\x86-unicode"
           New-Item -ItemType Directory -Force -Path $pluginDir | Out-Null
           $pluginUrl = "https://github.com/tauri-apps/nsis-tauri-utils/releases/download/nsis_tauri_utils-v0.4.1/nsis_tauri_utils.dll"
           Invoke-WebRequest -Uri $pluginUrl -OutFile "$pluginDir\nsis_tauri_utils.dll"
