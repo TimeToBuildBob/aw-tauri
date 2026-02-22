@@ -19,7 +19,7 @@ jobs:
           - platform: 'ubuntu-22.04-arm' # for Arm based linux.
           - platform: 'windows-latest'
           - platform: 'windows-11-arm' # for Windows ARM64
-            args: '--target aarch64-pc-windows-msvc'
+            args: '--target aarch64-pc-windows-msvc --bundles msi'
     runs-on: ${{ matrix.platform }}
 
     steps:
@@ -70,8 +70,9 @@ jobs:
         shell: pwsh
         run: |
           # windows-11-arm runners lack TLS in their default HTTP client,
-          # so tauri-bundler's internal downloader fails. Pre-download with
-          # PowerShell (which has proper TLS) into the cache dirs tauri expects.
+          # so tauri-bundler's internal downloader fails. Pre-download WiX
+          # with PowerShell (which has proper TLS) into the cache dir tauri expects.
+          # NSIS is skipped because we use --bundles msi (WiX only).
           $tauriTools = "$env:LOCALAPPDATA\tauri"
 
           # WiX 3.14 — tauri checks %LOCALAPPDATA%\tauri\WixTools314\
@@ -82,25 +83,6 @@ jobs:
           Invoke-WebRequest -Uri $wixUrl -OutFile $wixZip
           Expand-Archive -Path $wixZip -DestinationPath $wixDir -Force
           Write-Host "WiX installed to $wixDir ($(Get-ChildItem $wixDir | Measure-Object | Select-Object -Expand Count) files)"
-
-          # NSIS — zip contains nsis-3.08/ which tauri renames to NSIS/
-          $nsisUrl = "https://github.com/tauri-apps/binary-releases/releases/download/nsis-3/nsis-3.zip"
-          $nsisZip = "$env:TEMP\nsis-3.zip"
-          $nsisDir = "$tauriTools\NSIS"
-          Invoke-WebRequest -Uri $nsisUrl -OutFile $nsisZip
-          Expand-Archive -Path $nsisZip -DestinationPath $tauriTools -Force
-          # Zip extracts as nsis-3.08/ but tauri expects NSIS/
-          if (Test-Path "$tauriTools\nsis-3.08") {
-            Rename-Item "$tauriTools\nsis-3.08" "NSIS"
-          }
-          Write-Host "NSIS installed to $nsisDir ($(Test-Path $nsisDir))"
-
-          # NSIS tauri-utils plugin (downloaded separately by tauri-bundler)
-          $pluginDir = "$nsisDir\Plugins\x86-unicode"
-          New-Item -ItemType Directory -Force -Path $pluginDir | Out-Null
-          $pluginUrl = "https://github.com/tauri-apps/nsis-tauri-utils/releases/download/nsis_tauri_utils-v0.4.2/nsis_tauri_utils.dll"
-          Invoke-WebRequest -Uri $pluginUrl -OutFile "$pluginDir\nsis_tauri_utils.dll"
-          Write-Host "NSIS tauri-utils plugin installed to $pluginDir"
 
       - name: Build the app
         uses: tauri-apps/tauri-action@v0
