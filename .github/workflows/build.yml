@@ -71,10 +71,12 @@ jobs:
         run: |
           $wixUrl = "https://github.com/wixtoolset/wix3/releases/download/wix3141rtm/wix314-binaries.zip"
           $wixZip = "$env:TEMP\wix314.zip"
-          $wixDir = "$env:TEMP\wix314"
+          $wixDir = "$env:LOCALAPPDATA\tauri\WixTools314"
+          New-Item -ItemType Directory -Force -Path $wixDir | Out-Null
           Invoke-WebRequest -Uri $wixUrl -OutFile $wixZip
           Expand-Archive -Path $wixZip -DestinationPath $wixDir -Force
-          echo "WIX=$wixDir" | Out-File -FilePath $env:GITHUB_ENV -Append
+          Write-Host "WiX installed to $wixDir"
+          Get-ChildItem $wixDir | Select-Object -First 5 -ExpandProperty Name
 
       - name: Build the app
         uses: tauri-apps/tauri-action@v0
