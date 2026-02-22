@@ -98,7 +98,7 @@ jobs:
           # NSIS tauri-utils plugin (downloaded separately by tauri-bundler)
           $pluginDir = "$nsisDir\Plugins\x86-unicode"
           New-Item -ItemType Directory -Force -Path $pluginDir | Out-Null
-          $pluginUrl = "https://github.com/tauri-apps/nsis-tauri-utils/releases/download/nsis_tauri_utils-v0.4.1/nsis_tauri_utils.dll"
+          $pluginUrl = "https://github.com/tauri-apps/nsis-tauri-utils/releases/download/nsis_tauri_utils-v0.4.2/nsis_tauri_utils.dll"
           Invoke-WebRequest -Uri $pluginUrl -OutFile "$pluginDir\nsis_tauri_utils.dll"
           Write-Host "NSIS tauri-utils plugin installed to $pluginDir"
 
