@@ -205,36 +205,6 @@ pub fn listen_for_lockfile() {
     });
 }
 
-pub fn listen_for_url_changes() {
-    thread::spawn(move || {
-        let app = &*get_app_handle().lock().expect("failed to get app handle");
-        let main_window = app
-            .get_webview_window("main")
-            .expect("Failed to get main window");
-        let mut prev_url = main_window
-            .url()
-            .expect("Failed to get URL from main window");
-        loop {
-            thread::sleep(Duration::from_secs(1));
-            if let Ok(new_url) = main_window.url() {
-                if new_url != prev_url {
-                    if new_url.host_str() != Some("localhost") {
-                        info!("Opening external URL in browser: {}", new_url);
-                        if let Err(e) = app.opener().open_url(new_url.as_str(), None::<&str>) {
-                            warn!("Failed to open URL in browser: {}", e);
-                        }
-                        main_window
-                            .navigate(prev_url.clone())
-                            .expect("Failed to navigate back");
-                    } else {
-                        prev_url = new_url;
-                    }
-                }
-            }
-        }
-    });
-}
-
 pub struct SpecificFileWatcher {
     #[allow(dead_code)]
     watcher: RecommendedWatcher,
@@ -535,6 +505,28 @@ pub fn run() {
                 main_window
                     .navigate(url)
                     .expect("Error navigating main window");
+
+                // Intercept navigation to external URLs and open them in the system browser.
+                // This handles plain anchor links (<a href="https://...">).
+                let app_handle_nav = app.handle().clone();
+                main_window.on_navigation(move |nav_url| {
+                    if nav_url
+                        .host_str()
+                        .map(|h| h != "localhost")
+                        .unwrap_or(false)
+                    {
+                        info!("Opening external URL in browser: {}", nav_url);
+                        if let Err(e) = app_handle_nav
+                            .opener()
+                            .open_url(nav_url.as_str(), None::<&str>)
+                        {
+                            warn!("Failed to open URL in browser: {}", e);
+                        }
+                        false // block navigation in webview
+                    } else {
+                        true // allow local navigation
+                    }
+                });
                 let manager_state = manager::start_manager();
 
                 let open = MenuItem::with_id(app, "open", "Open Dashboard", true, None::<&str>)
@@ -611,7 +603,6 @@ pub fn run() {
 
             handle_first_run();
             listen_for_lockfile();
-            listen_for_url_changes();
             Ok(())
         })
         .on_window_event(|window, event| {
