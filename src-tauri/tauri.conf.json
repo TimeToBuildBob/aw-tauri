@@ -4,7 +4,14 @@
   "version": "0.1.0",
   "identifier": "net.activitywatch.app",
   "app": {
-    "windows": [],
+    "windows": [
+      {
+        "title": "aw-tauri",
+        "width": 800,
+        "height": 600,
+        "visible": false
+      }
+    ],
     "security": {
       "csp": null
     }

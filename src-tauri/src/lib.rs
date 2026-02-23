@@ -22,7 +22,6 @@ use log::{info, trace, warn};
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{TrayIconBuilder, TrayIconId},
-    webview::WebviewWindowBuilder,
     AppHandle, Manager,
 };
 
@@ -199,6 +198,36 @@ pub fn listen_for_lockfile() {
                         warn!("File watcher exited: {}. Relaunching in 1s...", e);
                         thread::sleep(Duration::from_secs(1));
                         break;
+                    }
+                }
+            }
+        }
+    });
+}
+
+pub fn listen_for_url_changes() {
+    thread::spawn(move || {
+        let app = &*get_app_handle().lock().expect("failed to get app handle");
+        let main_window = app
+            .get_webview_window("main")
+            .expect("Failed to get main window");
+        let mut prev_url = main_window
+            .url()
+            .expect("Failed to get URL from main window");
+        loop {
+            thread::sleep(Duration::from_secs(1));
+            if let Ok(new_url) = main_window.url() {
+                if new_url != prev_url {
+                    if new_url.host_str() != Some("localhost") {
+                        info!("Opening external URL in browser: {}", new_url);
+                        if let Err(e) = app.opener().open_url(new_url.as_str(), None::<&str>) {
+                            warn!("Failed to open URL in browser: {}", e);
+                        }
+                        main_window
+                            .navigate(prev_url.clone())
+                            .expect("Failed to navigate back");
+                    } else {
+                        prev_url = new_url;
                     }
                 }
             }
@@ -496,36 +525,16 @@ pub fn run() {
                     panic!("Port {} is already in use", user_config.port);
                 }
                 tauri::async_runtime::spawn(build_rocket(server_state, aw_config).launch());
-                let url: tauri::Url = format!("http://localhost:{}/", user_config.port)
+                let url = format!("http://localhost:{}/", user_config.port)
                     .parse()
                     .expect("Failed to parse localhost url");
-                let port = user_config.port;
-                let _main_window =
-                    WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::External(url))
-                        .title("aw-tauri")
-                        .inner_size(800.0, 600.0)
-                        .visible(false)
-                        .on_navigation(move |url| {
-                            // Allow internal Tauri URLs and local server navigation
-                            if url.scheme() == "tauri" || url.scheme() == "about" {
-                                return true;
-                            }
-                            let is_local =
-                                url.host_str() == Some("localhost") && url.port() == Some(port);
-                            if is_local {
-                                return true;
-                            }
-                            // External URL: open in system browser instead
-                            info!("Opening external URL in browser: {}", url);
-                            let url_string = url.to_string();
-                            let app = &*get_app_handle().lock().expect("Failed to get app handle");
-                            if let Err(e) = app.opener().open_url(&url_string, None::<&str>) {
-                                warn!("Failed to open URL in browser: {}", e);
-                            }
-                            false // block navigation in webview
-                        })
-                        .build()
-                        .expect("Failed to create main window");
+                let mut main_window = app
+                    .get_webview_window("main")
+                    .expect("Failed to show main window");
+
+                main_window
+                    .navigate(url)
+                    .expect("Error navigating main window");
                 let manager_state = manager::start_manager();
 
                 let open = MenuItem::with_id(app, "open", "Open Dashboard", true, None::<&str>)
@@ -602,6 +611,7 @@ pub fn run() {
 
             handle_first_run();
             listen_for_lockfile();
+            listen_for_url_changes();
             Ok(())
         })
         .on_window_event(|window, event| {
