@@ -22,6 +22,7 @@ use log::{info, trace, warn};
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{TrayIconBuilder, TrayIconId},
+    webview::WebviewWindowBuilder,
     AppHandle, Manager,
 };
 
@@ -495,16 +496,39 @@ pub fn run() {
                     panic!("Port {} is already in use", user_config.port);
                 }
                 tauri::async_runtime::spawn(build_rocket(server_state, aw_config).launch());
-                let url = format!("http://localhost:{}/", user_config.port)
+                let url: tauri::Url = format!("http://localhost:{}/", user_config.port)
                     .parse()
                     .expect("Failed to parse localhost url");
-                let mut main_window = app
-                    .get_webview_window("main")
-                    .expect("Failed to show main window");
-
-                main_window
-                    .navigate(url)
-                    .expect("Error navigating main window");
+                let port = user_config.port;
+                let _main_window =
+                    WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::External(url))
+                        .title("aw-tauri")
+                        .inner_size(800.0, 600.0)
+                        .visible(false)
+                        .on_navigation(move |url| {
+                            // Allow internal Tauri URLs and local server navigation
+                            if url.scheme() == "tauri" || url.scheme() == "about" {
+                                return true;
+                            }
+                            let is_local =
+                                url.host_str() == Some("localhost") && url.port() == Some(port);
+                            if is_local {
+                                return true;
+                            }
+                            // External URL: open in system browser instead
+                            info!("Opening external URL in browser: {}", url);
+                            let url_string = url.to_string();
+                            thread::spawn(move || {
+                                let app =
+                                    &*get_app_handle().lock().expect("Failed to get app handle");
+                                if let Err(e) = app.opener().open_url(&url_string, None::<&str>) {
+                                    warn!("Failed to open URL in browser: {}", e);
+                                }
+                            });
+                            false // block navigation in webview
+                        })
+                        .build()
+                        .expect("Failed to create main window");
                 let manager_state = manager::start_manager();
 
                 let open = MenuItem::with_id(app, "open", "Open Dashboard", true, None::<&str>)
