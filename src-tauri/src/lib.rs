@@ -518,13 +518,10 @@ pub fn run() {
                             // External URL: open in system browser instead
                             info!("Opening external URL in browser: {}", url);
                             let url_string = url.to_string();
-                            thread::spawn(move || {
-                                let app =
-                                    &*get_app_handle().lock().expect("Failed to get app handle");
-                                if let Err(e) = app.opener().open_url(&url_string, None::<&str>) {
-                                    warn!("Failed to open URL in browser: {}", e);
-                                }
-                            });
+                            let app = &*get_app_handle().lock().expect("Failed to get app handle");
+                            if let Err(e) = app.opener().open_url(&url_string, None::<&str>) {
+                                warn!("Failed to open URL in browser: {}", e);
+                            }
                             false // block navigation in webview
                         })
                         .build()
