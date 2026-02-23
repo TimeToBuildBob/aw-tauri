@@ -482,7 +482,7 @@ pub fn run() {
 
                 let mut aw_config = aw_server::config::create_config(testing);
 
-                // Port priority: CLI flag > config file > default
+                // Port priority: CLI flag > testing default (5666) > config file
                 let port = cli_args
                     .port
                     .unwrap_or(if testing { 5666 } else { user_config.port });
