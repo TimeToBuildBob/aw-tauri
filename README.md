@@ -2,7 +2,7 @@
 
 [![Build](https://github.com/ActivityWatch/aw-tauri/actions/workflows/build.yml/badge.svg)](https://github.com/ActivityWatch/aw-tauri/actions/workflows/build.yml)
 
-The default module manager and desktop shell for [ActivityWatch](https://activitywatch.net/), built with [Tauri](https://tauri.app/). Replaces the legacy [aw-qt](https://github.com/ActivityWatch/aw-qt) (Python/Qt).
+The next-gen module manager and desktop shell for [ActivityWatch](https://activitywatch.net/), built with [Tauri](https://tauri.app/). Replaces the legacy [aw-qt](https://github.com/ActivityWatch/aw-qt) (Python/Qt).
 
 ## What it does
 
