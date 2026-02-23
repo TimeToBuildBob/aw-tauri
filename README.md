@@ -4,6 +4,14 @@
 
 The next-gen module manager and desktop shell for [ActivityWatch](https://activitywatch.net/), built with [Tauri](https://tauri.app/). Replaces the legacy [aw-qt](https://github.com/ActivityWatch/aw-qt) (Python/Qt).
 
+## Why aw-tauri?
+
+- **Simpler builds** — No more PyInstaller. `npx tauri build` produces deb, rpm, AppImage, .app, and MSI from one codebase.
+- **Embedded server** — Runs aw-server-rust in-process; no separate server binary needed.
+- **Modern stack** — Rust + WebView instead of Python + Qt, with native code-signing and updater support.
+- **Cross-platform** — Builds for Linux, macOS, and Windows including ARM64.
+- **Mobile future** — Tauri supports iOS and Android, enabling future mobile ActivityWatch builds.
+
 ## What it does
 
 aw-tauri bundles everything needed to run ActivityWatch into a single application:
