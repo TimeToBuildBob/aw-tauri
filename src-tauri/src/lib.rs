@@ -591,6 +591,7 @@ pub(crate) fn prepare_aw_server(
 
 /// Run the lightweight mini mode: tray + server, no Tauri WebView.
 pub fn run_mini() {
+    MINI_MODE.set(true).expect("MINI_MODE already set");
     mini::run();
 }
 
@@ -635,8 +636,7 @@ pub fn run() {
     }
 
     if cli_args.mini {
-        MINI_MODE.set(true).expect("MINI_MODE already set");
-        mini::run();
+        run_mini();
         return;
     }
 

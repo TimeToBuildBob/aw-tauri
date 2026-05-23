@@ -137,7 +137,7 @@ pub fn run() {
                 if let Ok(mut state) = manager_state.lock() {
                     state.stop_modules();
                 }
-                *control_flow = ControlFlow::Exit;
+                std::process::exit(1);
             }
             Event::UserEvent(MiniEvent::Manager(event)) => match event {
                 manager::ManagerEvent::ModulesChanged {
