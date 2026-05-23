@@ -36,7 +36,7 @@ pub fn run() {
             Err(message) => {
                 error!("{}", message);
                 eprintln!("{}", message);
-                return;
+                std::process::exit(1);
             }
         };
     let server_port = aw_config.port;
