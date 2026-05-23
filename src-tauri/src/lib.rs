@@ -1,4 +1,7 @@
-use aw_server::endpoints::build_rocket;
+use aw_server::{
+    config::AWConfig,
+    endpoints::{build_rocket, ServerState},
+};
 use lazy_static::lazy_static;
 use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
@@ -17,6 +20,7 @@ use tauri_plugin_opener::OpenerExt;
 mod dirs;
 mod logging;
 mod manager;
+mod mini;
 
 /// CLI arguments passed from main()
 #[derive(Debug, Default)]
@@ -25,6 +29,7 @@ pub struct CliArgs {
     pub verbose: bool,
     pub port: Option<u16>,
     pub daemon: bool,
+    pub mini: bool,
 }
 
 static CLI_ARGS: OnceLock<CliArgs> = OnceLock::new();
@@ -516,6 +521,72 @@ fn run_daemon() {
     }
 }
 
+/// Prepare the aw-server state, config, and dashboard URL.
+/// Shared by mini mode and the Tauri GUI mode.
+pub(crate) fn prepare_aw_server(
+    user_config: &UserConfig,
+    cli_args: &CliArgs,
+) -> Result<(Url, ServerState, AWConfig), String> {
+    let testing = cli_args.testing;
+    let legacy_import = false;
+
+    let mut aw_config = aw_server::config::create_config(testing);
+
+    // Port priority: CLI flag > testing default (5666) > config file
+    let port = cli_args
+        .port
+        .unwrap_or(if testing { 5666 } else { user_config.port });
+    aw_config.port = port;
+    let db_path = aw_server::dirs::db_path(testing)
+        .map_err(|_| "Failed to get db path".to_string())?
+        .to_str()
+        .ok_or_else(|| "Database path is not valid UTF-8".to_string())?
+        .to_string();
+    let device_id = aw_server::device_id::get_device_id();
+
+    let webui_var = std::env::var("AW_WEBUI_DIR");
+
+    let asset_path_opt = if let Ok(path_str) = &webui_var {
+        let asset_path = PathBuf::from(path_str);
+        if asset_path.exists() {
+            info!("Using webui path: {}", path_str);
+            Some(asset_path)
+        } else {
+            return Err("Path set via env var AW_WEBUI_DIR does not exist".to_string());
+        }
+    } else {
+        info!("Using bundled assets");
+        None
+    };
+
+    let server_state = ServerState {
+        datastore: Mutex::new(aw_datastore::Datastore::new(db_path, legacy_import)),
+        asset_resolver: aw_server::endpoints::AssetResolver::new(asset_path_opt),
+        device_id,
+    };
+    if !is_port_available(port).map_err(|e| format!("Failed to check port availability: {e}"))? {
+        return Err(format!("Port {} is already in use", port));
+    }
+    if testing {
+        info!("Running in testing mode (port {})", port);
+    }
+    let dashboard_api_key = aw_config
+        .auth
+        .api_key
+        .as_deref()
+        .filter(|key| !key.is_empty());
+    if dashboard_api_key.is_some() {
+        info!("Bootstrapping aw-webui API token into dashboard URL");
+    }
+    let dashboard_url = build_dashboard_url(port, dashboard_api_key);
+    Ok((dashboard_url, server_state, aw_config))
+}
+
+/// Run the lightweight mini mode: tray + server, no Tauri WebView.
+pub fn run_mini() {
+    mini::run();
+}
+
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 #[tauri::command]
 fn greet(name: &str) -> String {
@@ -553,6 +624,11 @@ pub fn run() {
     if cli_args.daemon {
         DAEMON_MODE.set(true).expect("DAEMON_MODE already set");
         run_daemon();
+        return;
+    }
+
+    if cli_args.mini {
+        mini::run();
         return;
     }
 

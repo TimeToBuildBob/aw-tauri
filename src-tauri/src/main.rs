@@ -22,6 +22,10 @@ struct Cli {
     /// Run without GUI — no tray icon or windows, suitable for headless servers
     #[arg(long)]
     daemon: bool,
+
+    /// Run the lightweight tray/server mode without the Tauri WebView (~400 MB saved on Linux)
+    #[arg(long)]
+    mini: bool,
 }
 
 fn main() {
@@ -31,6 +35,7 @@ fn main() {
         verbose: cli.verbose,
         port: cli.port,
         daemon: cli.daemon,
+        mini: cli.mini,
     });
     aw_tauri_lib::run();
 }
