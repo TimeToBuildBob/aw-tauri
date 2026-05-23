@@ -24,7 +24,7 @@ struct Cli {
     daemon: bool,
 
     /// Run the lightweight tray/server mode without the Tauri WebView (~400 MB saved on Linux)
-    #[arg(long)]
+    #[arg(long, conflicts_with = "daemon")]
     mini: bool,
 }
 

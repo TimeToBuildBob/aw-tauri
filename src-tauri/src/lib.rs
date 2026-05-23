@@ -452,11 +452,19 @@ fn run_daemon() {
     let mut aw_config = aw_server::config::create_config(testing);
     aw_config.port = port;
 
-    let db_path = aw_server::dirs::db_path(testing)
-        .expect("Failed to get db path")
-        .to_str()
-        .unwrap()
-        .to_string();
+    let db_path = match aw_server::dirs::db_path(testing) {
+        Ok(path) => match path.to_str() {
+            Some(s) => s.to_string(),
+            None => {
+                eprintln!("Error: database path is not valid UTF-8");
+                std::process::exit(1);
+            }
+        },
+        Err(e) => {
+            eprintln!("Error: failed to get db path: {e}");
+            std::process::exit(1);
+        }
+    };
     let device_id = aw_server::device_id::get_device_id();
 
     let asset_path_opt = match std::env::var("AW_WEBUI_DIR") {
@@ -544,6 +552,13 @@ pub(crate) fn prepare_aw_server(
         .port
         .unwrap_or(if testing { 5666 } else { user_config.port });
     aw_config.port = port;
+
+    // Check port availability before opening the datastore — opening the SQLite
+    // store acquires a lock, so bail on a busy port first (matches run_daemon's order).
+    if !is_port_available(port).map_err(|e| format!("Failed to check port availability: {e}"))? {
+        return Err(format!("Port {} is already in use", port));
+    }
+
     let db_path = aw_server::dirs::db_path(testing)
         .map_err(|_| "Failed to get db path".to_string())?
         .to_str()
@@ -571,9 +586,6 @@ pub(crate) fn prepare_aw_server(
         asset_resolver: aw_server::endpoints::AssetResolver::new(asset_path_opt),
         device_id,
     };
-    if !is_port_available(port).map_err(|e| format!("Failed to check port availability: {e}"))? {
-        return Err(format!("Port {} is already in use", port));
-    }
     if testing {
         info!("Running in testing mode (port {})", port);
     }
