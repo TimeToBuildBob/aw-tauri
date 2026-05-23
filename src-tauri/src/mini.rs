@@ -22,6 +22,7 @@ use tray_icon::{
 enum MiniEvent {
     Menu(MenuEvent),
     Manager(manager::ManagerEvent),
+    ServerFailed(String),
 }
 
 pub fn run() {
@@ -39,12 +40,26 @@ pub fn run() {
             }
         };
     let server_port = aw_config.port;
-    tauri::async_runtime::spawn(
+    let rocket_handle = tauri::async_runtime::spawn(
         aw_server::endpoints::build_rocket(server_state, aw_config).launch(),
     );
     info!("Running aw-tauri mini mode at {}", dashboard_url.as_str());
 
     let event_loop = EventLoopBuilder::<MiniEvent>::with_user_event().build();
+    let server_proxy = event_loop.create_proxy();
+    tauri::async_runtime::spawn(async move {
+        match rocket_handle.await {
+            Ok(Err(e)) => {
+                error!("Server exited with error: {e:?}");
+                let _ = server_proxy.send_event(MiniEvent::ServerFailed(format!("{e:?}")));
+            }
+            Err(join_err) => {
+                error!("Rocket task panicked: {join_err:?}");
+                let _ = server_proxy.send_event(MiniEvent::ServerFailed(format!("{join_err:?}")));
+            }
+            Ok(Ok(_)) => {} // clean shutdown — event loop is likely already exiting
+        }
+    });
     let menu_proxy = event_loop.create_proxy();
     MenuEvent::set_event_handler(Some(move |event| {
         let _ = menu_proxy.send_event(MiniEvent::Menu(event));
@@ -116,6 +131,13 @@ pub fn run() {
                         }
                     }
                 }
+            }
+            Event::UserEvent(MiniEvent::ServerFailed(msg)) => {
+                show_notification("ActivityWatch Error", &format!("Server failed: {msg}"));
+                if let Ok(mut state) = manager_state.lock() {
+                    state.stop_modules();
+                }
+                *control_flow = ControlFlow::Exit;
             }
             Event::UserEvent(MiniEvent::Manager(event)) => match event {
                 manager::ManagerEvent::ModulesChanged {
