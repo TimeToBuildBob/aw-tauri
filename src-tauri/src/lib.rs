@@ -493,7 +493,7 @@ fn run_daemon() {
         Err(join_err) => {
             error!("Rocket task panicked: {:?}", join_err);
         }
-        Ok(Ok(())) => info!("Server shutdown cleanly"),
+        Ok(Ok(_)) => info!("Server shutdown cleanly"),
     }
 
     info!("Server stopped, shutting down modules");
