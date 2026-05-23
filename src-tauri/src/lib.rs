@@ -32,7 +32,7 @@ static DAEMON_MODE: OnceLock<bool> = OnceLock::new();
 
 /// Returns true when running in headless daemon mode (no Tauri/GUI).
 pub(crate) fn is_daemon_mode() -> bool {
-    *DAEMON_MODE.get_or_init(|| false)
+    DAEMON_MODE.get().copied().unwrap_or(false)
 }
 
 /// Set CLI args before calling run(). Must be called at most once.
@@ -472,16 +472,21 @@ fn run_daemon() {
 
     info!("Starting aw-tauri in daemon mode on port {port}");
 
-    // Start module manager (tray updates are no-ops in daemon mode)
-    let manager_state = manager::start_manager();
-
-    // Launch the HTTP server; Rocket handles SIGINT/SIGTERM and shuts down cleanly
+    // Build Tokio runtime first so we can spawn Rocket before starting modules
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .expect("Failed to build Tokio runtime");
 
-    if let Err(e) = rt.block_on(build_rocket(server_state, aw_config).launch()) {
+    // Spawn Rocket first so it begins binding the port before watchers start
+    // connecting — matches the GUI path ordering (spawn then start_manager)
+    let rocket_handle = rt.spawn(build_rocket(server_state, aw_config).launch());
+
+    // Start module manager after Rocket is already starting up
+    let manager_state = manager::start_manager();
+
+    // Wait for server shutdown (Rocket handles SIGINT/SIGTERM cleanly)
+    if let Err(e) = rt.block_on(rocket_handle).expect("Rocket task panicked") {
         error!("Server exited with error: {:?}", e);
     }
 
