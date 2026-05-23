@@ -488,19 +488,32 @@ fn run_daemon() {
     // Wait for server shutdown (Rocket handles SIGINT/SIGTERM cleanly)
     // Use match instead of expect so that stop_modules() always runs —
     // even if the Rocket task panics, we clean up watcher child processes.
-    match rt.block_on(rocket_handle) {
-        Ok(Err(e)) => error!("Server exited with error: {:?}", e),
+    // Track whether the exit was abnormal so we can propagate a non-zero
+    // exit code after cleanup — required for systemd/Docker restart policies.
+    let exit_error = match rt.block_on(rocket_handle) {
+        Ok(Err(e)) => {
+            error!("Server exited with error: {:?}", e);
+            true
+        }
         Err(join_err) => {
             error!("Rocket task panicked: {:?}", join_err);
+            true
         }
-        Ok(Ok(_)) => info!("Server shutdown cleanly"),
-    }
+        Ok(Ok(_)) => {
+            info!("Server shutdown cleanly");
+            false
+        }
+    };
 
     info!("Server stopped, shutting down modules");
     manager_state
         .lock()
         .expect("Failed to lock manager state")
         .stop_modules();
+
+    if exit_error {
+        std::process::exit(1);
+    }
 }
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
