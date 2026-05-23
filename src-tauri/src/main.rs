@@ -18,6 +18,10 @@ struct Cli {
     /// Override the port number
     #[arg(long)]
     port: Option<u16>,
+
+    /// Run without GUI — no tray icon or windows, suitable for headless servers
+    #[arg(long)]
+    daemon: bool,
 }
 
 fn main() {
@@ -26,6 +30,7 @@ fn main() {
         testing: cli.testing,
         verbose: cli.verbose,
         port: cli.port,
+        daemon: cli.daemon,
     });
     aw_tauri_lib::run();
 }

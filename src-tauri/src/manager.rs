@@ -148,6 +148,9 @@ fn update_tray_menu(
     modules_running: &BTreeMap<String, bool>,
     modules_discovered: &BTreeMap<String, PathBuf>,
 ) {
+    if crate::is_daemon_mode() {
+        return;
+    }
     let (lock, cvar) = &*HANDLE_CONDVAR;
     let mut state = lock.lock().expect("Failed to acquire manager_state lock");
 
@@ -433,15 +436,19 @@ fn handle(rx: Receiver<ModuleMessage>, state: Arc<Mutex<ManagerState>>) {
                             if should_restart {
                                 if let Some((secs, restart_count)) = restart_info {
                                     {
-                                        // Show dialog BEFORE sleeping
-                                        let app = &*get_app_handle()
-                                            .lock()
-                                            .expect("Failed to get app handle");
-                                        app.dialog()
-                                            .message(format!("{name_clone} crashed. Restarting..."))
-                                            .kind(MessageDialogKind::Warning)
-                                            .title("Warning")
-                                            .show(|_| {});
+                                        // Show dialog BEFORE sleeping (skip in daemon mode)
+                                        if !crate::is_daemon_mode() {
+                                            let app = &*get_app_handle()
+                                                .lock()
+                                                .expect("Failed to get app handle");
+                                            app.dialog()
+                                                .message(format!(
+                                                    "{name_clone} crashed. Restarting..."
+                                                ))
+                                                .kind(MessageDialogKind::Warning)
+                                                .title("Warning")
+                                                .show(|_| {});
+                                        }
                                     }
                                     error!("Module {name_clone} crashed and will be restarted");
 
@@ -471,15 +478,18 @@ fn handle(rx: Receiver<ModuleMessage>, state: Arc<Mutex<ManagerState>>) {
                                     .modules_pending_shutdown
                                     .insert(name_clone.clone(), true);
 
-                                let app =
-                                    &*get_app_handle().lock().expect("Failed to get app handle");
-                                app.dialog()
-                                    .message(format!(
-                                        "{name_clone} keeps on crashing. Restart limit reached."
-                                    ))
-                                    .kind(MessageDialogKind::Warning)
-                                    .title("Warning")
-                                    .show(|_| {});
+                                if !crate::is_daemon_mode() {
+                                    let app = &*get_app_handle()
+                                        .lock()
+                                        .expect("Failed to get app handle");
+                                    app.dialog()
+                                        .message(format!(
+                                            "{name_clone} keeps on crashing. Restart limit reached."
+                                        ))
+                                        .kind(MessageDialogKind::Warning)
+                                        .title("Warning")
+                                        .show(|_| {});
+                                }
                                 error!("Module {name_clone} exceeded crash restart limit");
                             }
                         });
@@ -846,6 +856,13 @@ fn start_notify_module_thread(
 }
 
 fn send_notification(title: &str, message: &str) {
+    if crate::is_daemon_mode() {
+        info!(
+            "Notification (suppressed in daemon mode): {} — {}",
+            title, message
+        );
+        return;
+    }
     // Get app handle and send notification
     if let Ok(app_handle_guard) = get_app_handle().lock() {
         let app_handle = &*app_handle_guard;

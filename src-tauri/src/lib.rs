@@ -24,9 +24,16 @@ pub struct CliArgs {
     pub testing: bool,
     pub verbose: bool,
     pub port: Option<u16>,
+    pub daemon: bool,
 }
 
 static CLI_ARGS: OnceLock<CliArgs> = OnceLock::new();
+static DAEMON_MODE: OnceLock<bool> = OnceLock::new();
+
+/// Returns true when running in headless daemon mode (no Tauri/GUI).
+pub(crate) fn is_daemon_mode() -> bool {
+    *DAEMON_MODE.get_or_init(|| false)
+}
 
 /// Set CLI args before calling run(). Must be called at most once.
 pub fn set_cli_args(args: CliArgs) {
@@ -37,7 +44,7 @@ fn get_cli_args() -> &'static CliArgs {
     CLI_ARGS.get_or_init(CliArgs::default)
 }
 
-use log::{info, trace, warn};
+use log::{error, info, trace, warn};
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{TrayIconBuilder, TrayIconId},
@@ -392,12 +399,14 @@ pub(crate) fn get_config() -> &'static UserConfig {
                 Err(e) => {
                     warn!("Failed to parse config file: {}. Using default config.", e);
 
-                    let app = &*get_app_handle().lock().expect("Failed to get app handle");
-                    app.dialog()
-                        .message("Malformed config file. Using default config.")
-                        .kind(MessageDialogKind::Error)
-                        .title("Error")
-                        .show(|_| {});
+                    if !is_daemon_mode() {
+                        let app = &*get_app_handle().lock().expect("Failed to get app handle");
+                        app.dialog()
+                            .message("Malformed config file. Using default config.")
+                            .kind(MessageDialogKind::Error)
+                            .title("Error")
+                            .show(|_| {});
+                    }
 
                     UserConfig::default()
                 }
@@ -411,6 +420,76 @@ pub(crate) fn get_config() -> &'static UserConfig {
             config
         }
     })
+}
+
+/// Run without a GUI: start the server and module manager, block until a signal
+/// is received, then cleanly stop all modules.
+fn run_daemon() {
+    let cli_args = get_cli_args();
+    let testing = cli_args.testing;
+
+    let config = get_config();
+    let port = cli_args
+        .port
+        .unwrap_or(if testing { 5666 } else { config.port });
+
+    if !is_port_available(port).expect("Failed to check port availability") {
+        eprintln!("Error: port {} is already in use", port);
+        std::process::exit(1);
+    }
+
+    let mut aw_config = aw_server::config::create_config(testing);
+    aw_config.port = port;
+
+    let db_path = aw_server::dirs::db_path(testing)
+        .expect("Failed to get db path")
+        .to_str()
+        .unwrap()
+        .to_string();
+    let device_id = aw_server::device_id::get_device_id();
+
+    let asset_path_opt = match std::env::var("AW_WEBUI_DIR") {
+        Ok(path_str) => {
+            let asset_path = PathBuf::from(&path_str);
+            if asset_path.exists() {
+                info!("Using webui path: {}", path_str);
+                Some(asset_path)
+            } else {
+                panic!("Path set via AW_WEBUI_DIR does not exist");
+            }
+        }
+        Err(_) => {
+            info!("Using bundled assets");
+            None
+        }
+    };
+
+    let server_state = aw_server::endpoints::ServerState {
+        datastore: Mutex::new(aw_datastore::Datastore::new(db_path, false)),
+        asset_resolver: aw_server::endpoints::AssetResolver::new(asset_path_opt),
+        device_id,
+    };
+
+    info!("Starting aw-tauri in daemon mode on port {port}");
+
+    // Start module manager (tray updates are no-ops in daemon mode)
+    let manager_state = manager::start_manager();
+
+    // Launch the HTTP server; Rocket handles SIGINT/SIGTERM and shuts down cleanly
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("Failed to build Tokio runtime");
+
+    if let Err(e) = rt.block_on(build_rocket(server_state, aw_config).launch()) {
+        error!("Server exited with error: {:?}", e);
+    }
+
+    info!("Server stopped, shutting down modules");
+    manager_state
+        .lock()
+        .expect("Failed to lock manager state")
+        .stop_modules();
 }
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
@@ -445,6 +524,12 @@ pub fn run() {
     if let Err(e) = logging::setup_logging() {
         // Can't use log here since logging isn't initialized yet
         eprintln!("Failed to initialize logging: {}", e);
+    }
+
+    if cli_args.daemon {
+        DAEMON_MODE.set(true).expect("DAEMON_MODE already set");
+        run_daemon();
+        return;
     }
 
     tauri::Builder::default()
