@@ -486,8 +486,14 @@ fn run_daemon() {
     let manager_state = manager::start_manager();
 
     // Wait for server shutdown (Rocket handles SIGINT/SIGTERM cleanly)
-    if let Err(e) = rt.block_on(rocket_handle).expect("Rocket task panicked") {
-        error!("Server exited with error: {:?}", e);
+    // Use match instead of expect so that stop_modules() always runs —
+    // even if the Rocket task panics, we clean up watcher child processes.
+    match rt.block_on(rocket_handle) {
+        Ok(Err(e)) => error!("Server exited with error: {:?}", e),
+        Err(join_err) => {
+            error!("Rocket task panicked: {:?}", join_err);
+        }
+        Ok(Ok(())) => info!("Server shutdown cleanly"),
     }
 
     info!("Server stopped, shutting down modules");
