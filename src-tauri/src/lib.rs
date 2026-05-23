@@ -460,8 +460,8 @@ fn run_daemon() {
                 std::process::exit(1);
             }
         },
-        Err(e) => {
-            eprintln!("Error: failed to get db path: {e}");
+        Err(_) => {
+            eprintln!("Error: failed to get db path");
             std::process::exit(1);
         }
     };
