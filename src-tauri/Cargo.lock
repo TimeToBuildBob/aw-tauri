@@ -471,9 +471,13 @@ dependencies = [
  "log",
  "nix",
  "notify",
+ "notify-rust",
+ "open",
+ "png",
  "serde",
  "serde_json",
  "shell-words",
+ "tao",
  "tauri",
  "tauri-build",
  "tauri-plugin-autostart",
@@ -484,6 +488,7 @@ dependencies = [
  "tauri-plugin-single-instance",
  "tokio",
  "toml 0.9.12+spec-1.1.0",
+ "tray-icon",
  "winapi",
 ]
 

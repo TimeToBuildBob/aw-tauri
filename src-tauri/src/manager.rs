@@ -366,6 +366,10 @@ pub fn start_manager() -> Arc<Mutex<ManagerState>> {
     start_manager_inner(get_config().port, None)
 }
 
+pub(crate) fn start_manager_with_port(server_port: u16) -> Arc<Mutex<ManagerState>> {
+    start_manager_inner(server_port, None)
+}
+
 pub(crate) fn start_manager_with_events(
     server_port: u16,
     event_tx: Sender<ManagerEvent>,

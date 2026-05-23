@@ -487,8 +487,9 @@ fn run_daemon() {
     // connecting — matches the GUI path ordering (spawn then start_manager)
     let rocket_handle = rt.spawn(build_rocket(server_state, aw_config).launch());
 
-    // Start module manager after Rocket is already starting up
-    let manager_state = manager::start_manager();
+    // Start module manager after Rocket is already starting up.
+    // Pass the CLI-computed port so --testing and --port are respected.
+    let manager_state = manager::start_manager_with_port(port);
 
     // Wait for server shutdown (Rocket handles SIGINT/SIGTERM cleanly)
     // Use match instead of expect so that stop_modules() always runs —
