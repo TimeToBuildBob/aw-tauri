@@ -34,10 +34,16 @@ pub struct CliArgs {
 
 static CLI_ARGS: OnceLock<CliArgs> = OnceLock::new();
 static DAEMON_MODE: OnceLock<bool> = OnceLock::new();
+static MINI_MODE: OnceLock<bool> = OnceLock::new();
 
 /// Returns true when running in headless daemon mode (no Tauri/GUI).
 pub(crate) fn is_daemon_mode() -> bool {
     DAEMON_MODE.get().copied().unwrap_or(false)
+}
+
+/// Returns true when running in mini mode (tray + server, no Tauri WebView).
+pub(crate) fn is_mini_mode() -> bool {
+    MINI_MODE.get().copied().unwrap_or(false)
 }
 
 /// Set CLI args before calling run(). Must be called at most once.
@@ -404,7 +410,7 @@ pub(crate) fn get_config() -> &'static UserConfig {
                 Err(e) => {
                     warn!("Failed to parse config file: {}. Using default config.", e);
 
-                    if !is_daemon_mode() {
+                    if !is_daemon_mode() && !is_mini_mode() {
                         let app = &*get_app_handle().lock().expect("Failed to get app handle");
                         app.dialog()
                             .message("Malformed config file. Using default config.")
@@ -629,6 +635,7 @@ pub fn run() {
     }
 
     if cli_args.mini {
+        MINI_MODE.set(true).expect("MINI_MODE already set");
         mini::run();
         return;
     }
