@@ -1,4 +1,7 @@
-use aw_server::endpoints::build_rocket;
+use aw_server::{
+    config::AWConfig,
+    endpoints::{build_rocket, ServerState},
+};
 use lazy_static::lazy_static;
 use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
@@ -17,6 +20,7 @@ use tauri_plugin_opener::OpenerExt;
 mod dirs;
 mod logging;
 mod manager;
+mod mini;
 
 /// CLI arguments passed from main()
 #[derive(Debug, Default)]
@@ -24,9 +28,23 @@ pub struct CliArgs {
     pub testing: bool,
     pub verbose: bool,
     pub port: Option<u16>,
+    pub daemon: bool,
+    pub mini: bool,
 }
 
 static CLI_ARGS: OnceLock<CliArgs> = OnceLock::new();
+static DAEMON_MODE: OnceLock<bool> = OnceLock::new();
+static MINI_MODE: OnceLock<bool> = OnceLock::new();
+
+/// Returns true when running in headless daemon mode (no Tauri/GUI).
+pub(crate) fn is_daemon_mode() -> bool {
+    DAEMON_MODE.get().copied().unwrap_or(false)
+}
+
+/// Returns true when running in mini mode (tray + server, no Tauri WebView).
+pub(crate) fn is_mini_mode() -> bool {
+    MINI_MODE.get().copied().unwrap_or(false)
+}
 
 /// Set CLI args before calling run(). Must be called at most once.
 pub fn set_cli_args(args: CliArgs) {
@@ -37,7 +55,7 @@ fn get_cli_args() -> &'static CliArgs {
     CLI_ARGS.get_or_init(CliArgs::default)
 }
 
-use log::{info, trace, warn};
+use log::{error, info, trace, warn};
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{TrayIconBuilder, TrayIconId},
@@ -392,12 +410,14 @@ pub(crate) fn get_config() -> &'static UserConfig {
                 Err(e) => {
                     warn!("Failed to parse config file: {}. Using default config.", e);
 
-                    let app = &*get_app_handle().lock().expect("Failed to get app handle");
-                    app.dialog()
-                        .message("Malformed config file. Using default config.")
-                        .kind(MessageDialogKind::Error)
-                        .title("Error")
-                        .show(|_| {});
+                    if !is_daemon_mode() && !is_mini_mode() {
+                        let app = &*get_app_handle().lock().expect("Failed to get app handle");
+                        app.dialog()
+                            .message("Malformed config file. Using default config.")
+                            .kind(MessageDialogKind::Error)
+                            .title("Error")
+                            .show(|_| {});
+                    }
 
                     UserConfig::default()
                 }
@@ -411,6 +431,180 @@ pub(crate) fn get_config() -> &'static UserConfig {
             config
         }
     })
+}
+
+/// Run without a GUI: start the server and module manager, block until a signal
+/// is received, then cleanly stop all modules.
+fn run_daemon() {
+    let cli_args = get_cli_args();
+    let testing = cli_args.testing;
+
+    let config = get_config();
+    let port = cli_args
+        .port
+        .unwrap_or(if testing { 5666 } else { config.port });
+
+    if !is_port_available(port).expect("Failed to check port availability") {
+        eprintln!("Error: port {} is already in use", port);
+        std::process::exit(1);
+    }
+
+    let mut aw_config = aw_server::config::create_config(testing);
+    aw_config.port = port;
+
+    let db_path = match aw_server::dirs::db_path(testing) {
+        Ok(path) => match path.to_str() {
+            Some(s) => s.to_string(),
+            None => {
+                eprintln!("Error: database path is not valid UTF-8");
+                std::process::exit(1);
+            }
+        },
+        Err(_) => {
+            eprintln!("Error: failed to get db path");
+            std::process::exit(1);
+        }
+    };
+    let device_id = aw_server::device_id::get_device_id();
+
+    let asset_path_opt = match std::env::var("AW_WEBUI_DIR") {
+        Ok(path_str) => {
+            let asset_path = PathBuf::from(&path_str);
+            if asset_path.exists() {
+                info!("Using webui path: {}", path_str);
+                Some(asset_path)
+            } else {
+                panic!("Path set via AW_WEBUI_DIR does not exist");
+            }
+        }
+        Err(_) => {
+            info!("Using bundled assets");
+            None
+        }
+    };
+
+    let server_state = aw_server::endpoints::ServerState {
+        datastore: Mutex::new(aw_datastore::Datastore::new(db_path, false)),
+        asset_resolver: aw_server::endpoints::AssetResolver::new(asset_path_opt),
+        device_id,
+    };
+
+    info!("Starting aw-tauri in daemon mode on port {port}");
+
+    // Build Tokio runtime first so we can spawn Rocket before starting modules
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("Failed to build Tokio runtime");
+
+    // Spawn Rocket first so it begins binding the port before watchers start
+    // connecting — matches the GUI path ordering (spawn then start_manager)
+    let rocket_handle = rt.spawn(build_rocket(server_state, aw_config).launch());
+
+    // Start module manager after Rocket is already starting up.
+    // Pass the CLI-computed port so --testing and --port are respected.
+    let manager_state = manager::start_manager_with_port(port);
+
+    // Wait for server shutdown (Rocket handles SIGINT/SIGTERM cleanly)
+    // Use match instead of expect so that stop_modules() always runs —
+    // even if the Rocket task panics, we clean up watcher child processes.
+    // Track whether the exit was abnormal so we can propagate a non-zero
+    // exit code after cleanup — required for systemd/Docker restart policies.
+    let exit_error = match rt.block_on(rocket_handle) {
+        Ok(Err(e)) => {
+            error!("Server exited with error: {:?}", e);
+            true
+        }
+        Err(join_err) => {
+            error!("Rocket task panicked: {:?}", join_err);
+            true
+        }
+        Ok(Ok(_)) => {
+            info!("Server shutdown cleanly");
+            false
+        }
+    };
+
+    info!("Server stopped, shutting down modules");
+    manager_state
+        .lock()
+        .expect("Failed to lock manager state")
+        .stop_modules();
+
+    if exit_error {
+        std::process::exit(1);
+    }
+}
+
+/// Prepare the aw-server state, config, and dashboard URL.
+/// Shared by mini mode and the Tauri GUI mode.
+pub(crate) fn prepare_aw_server(
+    user_config: &UserConfig,
+    cli_args: &CliArgs,
+) -> Result<(Url, ServerState, AWConfig), String> {
+    let testing = cli_args.testing;
+    let legacy_import = false;
+
+    let mut aw_config = aw_server::config::create_config(testing);
+
+    // Port priority: CLI flag > testing default (5666) > config file
+    let port = cli_args
+        .port
+        .unwrap_or(if testing { 5666 } else { user_config.port });
+    aw_config.port = port;
+
+    // Check port availability before opening the datastore — opening the SQLite
+    // store acquires a lock, so bail on a busy port first (matches run_daemon's order).
+    if !is_port_available(port).map_err(|e| format!("Failed to check port availability: {e}"))? {
+        return Err(format!("Port {} is already in use", port));
+    }
+
+    let db_path = aw_server::dirs::db_path(testing)
+        .map_err(|_| "Failed to get db path".to_string())?
+        .to_str()
+        .ok_or_else(|| "Database path is not valid UTF-8".to_string())?
+        .to_string();
+    let device_id = aw_server::device_id::get_device_id();
+
+    let webui_var = std::env::var("AW_WEBUI_DIR");
+
+    let asset_path_opt = if let Ok(path_str) = &webui_var {
+        let asset_path = PathBuf::from(path_str);
+        if asset_path.exists() {
+            info!("Using webui path: {}", path_str);
+            Some(asset_path)
+        } else {
+            return Err("Path set via env var AW_WEBUI_DIR does not exist".to_string());
+        }
+    } else {
+        info!("Using bundled assets");
+        None
+    };
+
+    let server_state = ServerState {
+        datastore: Mutex::new(aw_datastore::Datastore::new(db_path, legacy_import)),
+        asset_resolver: aw_server::endpoints::AssetResolver::new(asset_path_opt),
+        device_id,
+    };
+    if testing {
+        info!("Running in testing mode (port {})", port);
+    }
+    let dashboard_api_key = aw_config
+        .auth
+        .api_key
+        .as_deref()
+        .filter(|key| !key.is_empty());
+    if dashboard_api_key.is_some() {
+        info!("Bootstrapping aw-webui API token into dashboard URL");
+    }
+    let dashboard_url = build_dashboard_url(port, dashboard_api_key);
+    Ok((dashboard_url, server_state, aw_config))
+}
+
+/// Run the lightweight mini mode: tray + server, no Tauri WebView.
+pub fn run_mini() {
+    MINI_MODE.set(true).expect("MINI_MODE already set");
+    mini::run();
 }
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
@@ -445,6 +639,17 @@ pub fn run() {
     if let Err(e) = logging::setup_logging() {
         // Can't use log here since logging isn't initialized yet
         eprintln!("Failed to initialize logging: {}", e);
+    }
+
+    if cli_args.daemon {
+        DAEMON_MODE.set(true).expect("DAEMON_MODE already set");
+        run_daemon();
+        return;
+    }
+
+    if cli_args.mini {
+        run_mini();
+        return;
     }
 
     tauri::Builder::default()

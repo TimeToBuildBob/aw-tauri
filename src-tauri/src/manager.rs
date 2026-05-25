@@ -30,7 +30,7 @@ use {
     },
 };
 
-use log::{debug, error, info, trace};
+use log::{debug, error, info, trace, warn};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::process::Command;
@@ -59,11 +59,28 @@ enum ModuleMessage {
         output: std::process::Output,
     },
     Init {},
+    Notification {
+        title: String,
+        message: String,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum ManagerEvent {
+    ModulesChanged {
+        modules_running: BTreeMap<String, bool>,
+        modules_discovered: BTreeMap<String, PathBuf>,
+    },
+    Notification {
+        title: String,
+        message: String,
+    },
 }
 
 #[derive(Debug)]
 pub struct ManagerState {
     tx: Sender<ModuleMessage>,
+    pub server_port: u16,
     pub modules_running: BTreeMap<String, bool>,
     pub modules_discovered: BTreeMap<String, PathBuf>,
     pub modules_pid: HashMap<String, u32>,
@@ -74,9 +91,10 @@ pub struct ManagerState {
 }
 
 impl ManagerState {
-    fn new(tx: Sender<ModuleMessage>) -> ManagerState {
+    fn new(tx: Sender<ModuleMessage>, server_port: u16) -> ManagerState {
         ManagerState {
             tx,
+            server_port,
             //TODO: merge some of these maps into a single struct
             modules_running: BTreeMap::new(),
             modules_discovered: discover_modules(),
@@ -108,6 +126,7 @@ impl ManagerState {
                     name.to_string(),
                     path.clone(),
                     args.cloned(),
+                    self.server_port,
                     self.tx.clone(),
                 );
             } else {
@@ -147,7 +166,19 @@ impl ManagerState {
 fn update_tray_menu(
     modules_running: &BTreeMap<String, bool>,
     modules_discovered: &BTreeMap<String, PathBuf>,
+    event_tx: &Option<Sender<ManagerEvent>>,
 ) {
+    // In mini mode, forward state to the mini event loop instead of Tauri
+    if let Some(tx) = event_tx {
+        let _ = tx.send(ManagerEvent::ModulesChanged {
+            modules_running: modules_running.clone(),
+            modules_discovered: modules_discovered.clone(),
+        });
+        return;
+    }
+    if crate::is_daemon_mode() {
+        return;
+    }
     let (lock, cvar) = &*HANDLE_CONDVAR;
     let mut state = lock.lock().expect("Failed to acquire manager_state lock");
 
@@ -332,8 +363,26 @@ fn monitor_parent_process(child_pid: u32, read_fd: i32) {
 }
 
 pub fn start_manager() -> Arc<Mutex<ManagerState>> {
+    start_manager_inner(get_config().port, None)
+}
+
+pub(crate) fn start_manager_with_port(server_port: u16) -> Arc<Mutex<ManagerState>> {
+    start_manager_inner(server_port, None)
+}
+
+pub(crate) fn start_manager_with_events(
+    server_port: u16,
+    event_tx: Sender<ManagerEvent>,
+) -> Arc<Mutex<ManagerState>> {
+    start_manager_inner(server_port, Some(event_tx))
+}
+
+fn start_manager_inner(
+    server_port: u16,
+    event_tx: Option<Sender<ManagerEvent>>,
+) -> Arc<Mutex<ManagerState>> {
     let (tx, rx) = channel();
-    let state = Arc::new(Mutex::new(ManagerState::new(tx.clone())));
+    let state = Arc::new(Mutex::new(ManagerState::new(tx.clone(), server_port)));
 
     // Start the modules
     let config = get_config();
@@ -365,16 +414,27 @@ pub fn start_manager() -> Arc<Mutex<ManagerState>> {
 
     let state_clone = Arc::clone(&state);
     thread::spawn(move || {
-        handle(rx, state_clone);
+        handle(rx, state_clone, event_tx);
     });
     state
 }
 
-fn handle(rx: Receiver<ModuleMessage>, state: Arc<Mutex<ManagerState>>) {
+fn handle(
+    rx: Receiver<ModuleMessage>,
+    state: Arc<Mutex<ManagerState>>,
+    event_tx: Option<Sender<ManagerEvent>>,
+) {
     loop {
         let msg = rx.recv().expect("Failed to receive Module message");
         let state_clone = Arc::clone(&state);
 
+        // aw-notify notifications are forwarded directly without touching tray state
+        if let ModuleMessage::Notification { title, message } = msg {
+            route_notification(&event_tx, &title, &message);
+            continue;
+        }
+
+        let event_tx_for_restart = event_tx.clone();
         let (modules_running, modules_discovered) = {
             let mut state_guard = state.lock().expect("Failed to acquire manager_state lock");
             match msg {
@@ -432,17 +492,10 @@ fn handle(rx: Receiver<ModuleMessage>, state: Arc<Mutex<ManagerState>>) {
 
                             if should_restart {
                                 if let Some((secs, restart_count)) = restart_info {
-                                    {
-                                        // Show dialog BEFORE sleeping
-                                        let app = &*get_app_handle()
-                                            .lock()
-                                            .expect("Failed to get app handle");
-                                        app.dialog()
-                                            .message(format!("{name_clone} crashed. Restarting..."))
-                                            .kind(MessageDialogKind::Warning)
-                                            .title("Warning")
-                                            .show(|_| {});
-                                    }
+                                    show_warning(
+                                        &event_tx_for_restart,
+                                        &format!("{name_clone} crashed. Restarting..."),
+                                    );
                                     error!("Module {name_clone} crashed and will be restarted");
 
                                     thread::sleep(Duration::from_secs(secs));
@@ -470,16 +523,12 @@ fn handle(rx: Receiver<ModuleMessage>, state: Arc<Mutex<ManagerState>>) {
                                 state_guard
                                     .modules_pending_shutdown
                                     .insert(name_clone.clone(), true);
-
-                                let app =
-                                    &*get_app_handle().lock().expect("Failed to get app handle");
-                                app.dialog()
-                                    .message(format!(
+                                show_warning(
+                                    &event_tx_for_restart,
+                                    &format!(
                                         "{name_clone} keeps on crashing. Restart limit reached."
-                                    ))
-                                    .kind(MessageDialogKind::Warning)
-                                    .title("Warning")
-                                    .show(|_| {});
+                                    ),
+                                );
                                 error!("Module {name_clone} exceeded crash restart limit");
                             }
                         });
@@ -499,9 +548,11 @@ fn handle(rx: Receiver<ModuleMessage>, state: Arc<Mutex<ManagerState>>) {
                     state_guard.modules_running.clone(),
                     state_guard.modules_discovered.clone(),
                 ),
+                // Already handled above via early-continue
+                ModuleMessage::Notification { .. } => unreachable!(),
             }
         };
-        update_tray_menu(&modules_running, &modules_discovered);
+        update_tray_menu(&modules_running, &modules_discovered, &event_tx);
     }
 }
 
@@ -509,22 +560,24 @@ fn start_module_thread(
     name: String,
     path: PathBuf,
     custom_args: Option<Vec<String>>,
+    server_port: u16,
     tx: Sender<ModuleMessage>,
 ) {
     // Special handling for aw-notify module
     if name == "aw-notify" {
         info!("Using special aw-notify handler for module: {name}");
-        start_notify_module_thread(name, path, custom_args, tx);
+        start_notify_module_thread(name, path, custom_args, server_port, tx);
         return;
     }
 
-    start_generic_module_thread(name, path, custom_args, tx);
+    start_generic_module_thread(name, path, custom_args, server_port, tx);
 }
 
 fn start_generic_module_thread(
     name: String,
     path: PathBuf,
     custom_args: Option<Vec<String>>,
+    server_port: u16,
     tx: Sender<ModuleMessage>,
 ) {
     thread::spawn(move || {
@@ -557,8 +610,8 @@ fn start_generic_module_thread(
         // Use custom args if provided, otherwise only pass port arg if it's not the default (5600)
         if let Some(ref args) = custom_args {
             command.args(args);
-        } else if get_config().port != 5600 {
-            command.args(["--port", get_config().port.to_string().as_str()]);
+        } else if server_port != 5600 {
+            command.args(["--port", server_port.to_string().as_str()]);
         }
 
         // Set creation flags on Windows to hide console window
@@ -642,6 +695,7 @@ fn start_notify_module_thread(
     name: String,
     path: PathBuf,
     custom_args: Option<Vec<String>>,
+    server_port: u16,
     tx: Sender<ModuleMessage>,
 ) {
     thread::spawn(move || {
@@ -676,9 +730,9 @@ fn start_notify_module_thread(
         let mut args = vec!["--output-only".to_string()];
 
         // Add port argument if not default (5600)
-        if get_config().port != 5600 {
+        if server_port != 5600 {
             args.push("--port".to_string());
-            args.push(get_config().port.to_string());
+            args.push(server_port.to_string());
         }
 
         // Add any custom args
@@ -714,7 +768,7 @@ fn start_notify_module_thread(
                         let _ = close(pipe_read_fd);
                     }
                     // Fallback to generic module handler to avoid recursion
-                    start_generic_module_thread(name, path, custom_args, tx);
+                    start_generic_module_thread(name, path, custom_args, server_port, tx);
                     return;
                 } else {
                     error!("Failed to start module {name}: {e}");
@@ -780,7 +834,11 @@ fn start_notify_module_thread(
                                 notification.get("title").and_then(|t| t.as_str()),
                                 notification.get("message").and_then(|m| m.as_str()),
                             ) {
-                                send_notification(title, message);
+                                tx.send(ModuleMessage::Notification {
+                                    title: title.to_string(),
+                                    message: message.to_string(),
+                                })
+                                .expect("Failed to send notification message");
                                 info!(
                                     "Parsed JSON notification: title='{}', message length={}",
                                     title,
@@ -823,7 +881,7 @@ fn start_notify_module_thread(
                 }
 
                 // Fallback to generic module handler
-                start_generic_module_thread(name, path, custom_args, tx);
+                start_generic_module_thread(name, path, custom_args, server_port, tx);
                 return;
             }
         }
@@ -845,7 +903,47 @@ fn start_notify_module_thread(
     });
 }
 
-fn send_notification(title: &str, message: &str) {
+/// Route a notification: send via ManagerEvent channel (mini mode) or Tauri (GUI mode).
+fn route_notification(event_tx: &Option<Sender<ManagerEvent>>, title: &str, message: &str) {
+    if let Some(tx) = event_tx {
+        let _ = tx.send(ManagerEvent::Notification {
+            title: title.to_string(),
+            message: message.to_string(),
+        });
+        return;
+    }
+    send_tauri_notification(title, message);
+}
+
+/// Route a warning dialog: send via ManagerEvent channel (mini mode) or Tauri dialog (GUI mode).
+fn show_warning(event_tx: &Option<Sender<ManagerEvent>>, message: &str) {
+    if let Some(tx) = event_tx {
+        let _ = tx.send(ManagerEvent::Notification {
+            title: "Warning".to_string(),
+            message: message.to_string(),
+        });
+        return;
+    }
+    if crate::is_daemon_mode() {
+        warn!("{message}");
+        return;
+    }
+    let app = &*get_app_handle().lock().expect("Failed to get app handle");
+    app.dialog()
+        .message(message)
+        .kind(MessageDialogKind::Warning)
+        .title("Warning")
+        .show(|_| {});
+}
+
+fn send_tauri_notification(title: &str, message: &str) {
+    if crate::is_daemon_mode() {
+        info!(
+            "Notification (suppressed in daemon mode): {} — {}",
+            title, message
+        );
+        return;
+    }
     // Get app handle and send notification
     if let Ok(app_handle_guard) = get_app_handle().lock() {
         let app_handle = &*app_handle_guard;

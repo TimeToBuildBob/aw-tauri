@@ -18,6 +18,14 @@ struct Cli {
     /// Override the port number
     #[arg(long)]
     port: Option<u16>,
+
+    /// Run without GUI — no tray icon or windows, suitable for headless servers
+    #[arg(long)]
+    daemon: bool,
+
+    /// Run the lightweight tray/server mode without the Tauri WebView (~400 MB saved on Linux)
+    #[arg(long, conflicts_with = "daemon")]
+    mini: bool,
 }
 
 fn main() {
@@ -26,6 +34,8 @@ fn main() {
         testing: cli.testing,
         verbose: cli.verbose,
         port: cli.port,
+        daemon: cli.daemon,
+        mini: cli.mini,
     });
     aw_tauri_lib::run();
 }
