@@ -191,7 +191,7 @@ pub fn get_discovery_paths() -> Vec<PathBuf> {
                     discovery_paths.push(resources_dir.join("modules"));
                     // Also include Resources/ directly for compatibility with modules placed
                     // at the root (e.g. legacy build_app_tauri.sh layout).
-                    discovery_paths.push(resources_dir.clone());
+                    discovery_paths.push(resources_dir);
                 }
             }
         }
