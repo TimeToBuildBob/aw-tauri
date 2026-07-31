@@ -23,6 +23,9 @@ dist-ssr
 *.sln
 *.sw?
 
+# local dev env
+.envrc
+
 # generated files
 src-tauri/icons/*
 /target/
