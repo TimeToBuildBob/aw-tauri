@@ -1171,10 +1171,12 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            if let tauri::WindowEvent::CloseRequested { api, .. } = &event {
-                api.prevent_close();
-                window.hide().expect("Failed to hide main window");
-            };
+            if window.label() == "main" {
+                if let tauri::WindowEvent::CloseRequested { api, .. } = &event {
+                    api.prevent_close();
+                    window.hide().expect("Failed to hide main window");
+                }
+            }
         })
         .plugin(tauri_plugin_shell::init())
         .invoke_handler(tauri::generate_handler![

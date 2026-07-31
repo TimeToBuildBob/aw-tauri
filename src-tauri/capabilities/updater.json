@@ -1,0 +1,13 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "updater",
+  "description": "Capability for the update progress window",
+  "windows": [
+    "update-progress"
+  ],
+  "permissions": [
+    "core:default",
+    "allow-restart-app",
+    "allow-close-update-progress"
+  ]
+}
