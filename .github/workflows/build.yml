@@ -84,10 +84,25 @@ jobs:
           Expand-Archive -Path $wixZip -DestinationPath $wixDir -Force
           Write-Host "WiX installed to $wixDir ($(Get-ChildItem $wixDir | Measure-Object | Select-Object -Expand Count) files)"
 
+      - name: Configure updater artifacts
+        if: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          path = Path("src-tauri/tauri.conf.json")
+          config = json.loads(path.read_text())
+          config["bundle"]["createUpdaterArtifacts"] = True
+          path.write_text(json.dumps(config, indent=2) + "\n")
+          PY
+
       - name: Build the app
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           args: ${{ matrix.args }}
 
