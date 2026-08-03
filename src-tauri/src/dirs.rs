@@ -174,6 +174,10 @@ pub fn get_discovery_paths() -> Vec<PathBuf> {
         if let Ok(username) = std::env::var("USERNAME") {
             discovery_paths.push(PathBuf::from(format!(r"C:/Users/{}/aw-modules", username)));
             discovery_paths.push(PathBuf::from(format!(
+                r"C:/Users/{}/AppData/Local/Programs/ActivityWatch-Tauri",
+                username
+            )));
+            discovery_paths.push(PathBuf::from(format!(
                 r"C:/Users/{}/AppData/Local/Programs/ActivityWatch",
                 username
             )));
