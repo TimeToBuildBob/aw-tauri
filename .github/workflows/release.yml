@@ -22,6 +22,8 @@ jobs:
           - platform: 'windows-11-arm' # for Windows ARM64
             args: '--target aarch64-pc-windows-msvc'
     runs-on: ${{ matrix.platform }}
+    env:
+      HAS_TAURI_SIGNING_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
 
     steps:
       - name: Checkout repository
@@ -81,7 +83,7 @@ jobs:
         run: rustup target add $(echo "${{ matrix.args }}" | cut -d' ' -f2)
 
       - name: Configure updater artifacts
-        if: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
+        if: env.HAS_TAURI_SIGNING_KEY == 'true'
         shell: bash
         run: |
           python3 - <<'PY'
@@ -106,5 +108,5 @@ jobs:
           releaseBody: 'See the assets to download and install this version.'
           releaseDraft: true
           prerelease: false
-          includeUpdaterJson: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
+          includeUpdaterJson: ${{ env.HAS_TAURI_SIGNING_KEY }}
           args: ${{ matrix.args }}
