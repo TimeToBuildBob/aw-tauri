@@ -200,15 +200,29 @@ fn persist_enabled(enabled: bool) -> Result<(), String> {
             .map_err(|e| format!("Failed to write config file {}: {e}", path.display()));
     }
 
-    // Surgical patch unavailable (no `[autostart] enabled` key, or unreadable
-    // file). Re-read the on-disk config so we only fall back to the
-    // startup-cached values when the file genuinely doesn't exist yet —
-    // preserving any settings the user changed after startup (port, modules,
-    // etc.) even when an in-place edit isn't possible.
-    let mut config = std::fs::read_to_string(&path)
-        .ok()
-        .and_then(|s| toml::from_str::<UserConfig>(&s).ok())
-        .unwrap_or_else(|| get_config().clone());
+    // Surgical patch unavailable (no `[autostart] enabled` key, or the
+    // patched result didn't parse). Re-read the on-disk config for a full
+    // rewrite. If the file exists but is malformed we return an error rather
+    // than silently overwriting it with the startup-cached values — that would
+    // discard edits the user made to unrelated fields after startup.
+    let mut config = match std::fs::read_to_string(&path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            // New install: no file yet, safe to seed from startup defaults.
+            get_config().clone()
+        }
+        Err(e) => {
+            return Err(format!(
+                "Failed to read config file {}: {e}",
+                path.display()
+            ));
+        }
+        Ok(s) => toml::from_str::<UserConfig>(&s).map_err(|e| {
+            format!(
+                "Config file {} is malformed and cannot be updated safely: {e}",
+                path.display()
+            )
+        })?,
+    };
     config.autostart.enabled = enabled;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
