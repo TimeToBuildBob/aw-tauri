@@ -252,6 +252,10 @@ fn read_and_patch(path: &Path, enabled: bool) -> Option<String> {
 /// Rewrites the `enabled` key of the `[autostart]` table, preserving every
 /// other byte of the document — comments and hand-formatting included.
 ///
+/// Handles both section-style (`[autostart]\nenabled = …`) and dotted-key style
+/// (`autostart.enabled = …`) so valid TOML written either way is patched in
+/// place rather than falling through to the full-rewrite path.
+///
 /// Returns `None` when there is no such key to replace.
 fn patch_autostart_enabled(source: &str, enabled: bool) -> Option<String> {
     let mut out = String::with_capacity(source.len() + 8);
@@ -267,22 +271,33 @@ fn patch_autostart_enabled(source: &str, enabled: bool) -> Option<String> {
                 None => trimmed.trim_end(),
             };
             in_autostart = header == "[autostart]";
-        } else if in_autostart && !replaced {
-            if let Some((key, _)) = trimmed.split_once('=') {
-                if key.trim_end() == "enabled" {
-                    let indent = &line[..line.len() - trimmed.len()];
-                    let newline = if line.ends_with("\r\n") {
-                        "\r\n"
-                    } else if line.ends_with('\n') {
-                        "\n"
-                    } else {
-                        ""
-                    };
-                    out.push_str(indent);
-                    out.push_str(&format!("enabled = {enabled}{newline}"));
-                    replaced = true;
-                    continue;
-                }
+        } else if !replaced {
+            // Section-style: inside [autostart], match `enabled = …`
+            let matched_key = if in_autostart {
+                trimmed
+                    .split_once('=')
+                    .filter(|(k, _)| k.trim_end() == "enabled")
+                    .map(|_| "enabled")
+            } else {
+                // Dotted-key style: `autostart.enabled = …` at file scope.
+                // `toml` accepts this as an equivalent form; the patcher must
+                // recognise it so comments and other fields survive the toggle.
+                is_dotted_autostart_enabled(trimmed).then_some("autostart.enabled")
+            };
+
+            if let Some(key) = matched_key {
+                let indent = &line[..line.len() - trimmed.len()];
+                let newline = if line.ends_with("\r\n") {
+                    "\r\n"
+                } else if line.ends_with('\n') {
+                    "\n"
+                } else {
+                    ""
+                };
+                out.push_str(indent);
+                out.push_str(&format!("{key} = {enabled}{newline}"));
+                replaced = true;
+                continue;
             }
         }
 
@@ -290,6 +305,19 @@ fn patch_autostart_enabled(source: &str, enabled: bool) -> Option<String> {
     }
 
     replaced.then_some(out)
+}
+
+/// Returns `true` when `trimmed` is a dotted-key assignment for
+/// `autostart.enabled`, i.e., matches `autostart[ws].[ws]enabled[ws]=…`.
+fn is_dotted_autostart_enabled(trimmed: &str) -> bool {
+    (|| -> Option<()> {
+        let rest = trimmed.strip_prefix("autostart")?;
+        let rest = rest.trim_start().strip_prefix('.')?;
+        let rest = rest.trim_start().strip_prefix("enabled")?;
+        rest.trim_start().strip_prefix('=')?;
+        Some(())
+    })()
+    .is_some()
 }
 
 #[cfg(test)]
@@ -345,6 +373,33 @@ auto_download = true
     fn patch_reports_a_missing_key() {
         assert!(patch_autostart_enabled("[autostart]\nminimized = true\n", true).is_none());
         assert!(patch_autostart_enabled("port = 5600\n", true).is_none());
+    }
+
+    #[test]
+    fn patch_handles_dotted_key_syntax() {
+        // TOML allows `autostart.enabled = true` as an alternative to the
+        // section-header form; the patcher must handle it in place so comments
+        // and other fields are not lost through the full-rewrite fallback.
+        let source = "port = 5600\n# comment\nautostart.enabled = false\n";
+        let patched = patch_autostart_enabled(source, true).expect("should patch dotted-key form");
+        assert!(patched.contains("autostart.enabled = true"), "{patched}");
+        assert!(
+            patched.contains("port = 5600"),
+            "other fields preserved: {patched}"
+        );
+        assert!(
+            patched.contains("# comment"),
+            "comment preserved: {patched}"
+        );
+        assert_eq!(patched.lines().count(), source.lines().count());
+    }
+
+    #[test]
+    fn patch_handles_dotted_key_with_spaces_around_dot() {
+        let source = "autostart . enabled = true\n";
+        let patched =
+            patch_autostart_enabled(source, false).expect("should patch spaced dotted-key");
+        assert!(patched.contains("autostart.enabled = false"), "{patched}");
     }
 
     #[test]
