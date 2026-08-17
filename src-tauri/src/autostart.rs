@@ -200,9 +200,15 @@ fn persist_enabled(enabled: bool) -> Result<(), String> {
             .map_err(|e| format!("Failed to write config file {}: {e}", path.display()));
     }
 
-    // No `[autostart] enabled` to patch (missing or malformed file): fall back
-    // to writing out the config the app is currently running with.
-    let mut config = get_config().clone();
+    // Surgical patch unavailable (no `[autostart] enabled` key, or unreadable
+    // file). Re-read the on-disk config so we only fall back to the
+    // startup-cached values when the file genuinely doesn't exist yet —
+    // preserving any settings the user changed after startup (port, modules,
+    // etc.) even when an in-place edit isn't possible.
+    let mut config = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| toml::from_str::<UserConfig>(&s).ok())
+        .unwrap_or_else(|| get_config().clone());
     config.autostart.enabled = enabled;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
