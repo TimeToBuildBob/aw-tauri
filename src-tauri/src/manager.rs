@@ -329,6 +329,7 @@ fn build_tray_menu(
 
     let log_folder = MenuItem::with_id(app, "log_folder", "Open log folder", true, None::<&str>)
         .expect("Failed to create log folder menu item");
+    let autostart_item = crate::autostart::build_menu_item(app);
     let separator = PredefinedMenuItem::separator(app).expect("Failed to create separator");
     let menu = Menu::with_items(
         app,
@@ -337,6 +338,7 @@ fn build_tray_menu(
             &separator,
             &module_submenu,
             &separator,
+            &autostart_item,
             &config_folder,
             &log_folder,
             &separator,

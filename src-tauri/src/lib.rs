@@ -13,12 +13,13 @@ use std::path::{Path, PathBuf};
 use std::sync::{mpsc, Condvar, Mutex, OnceLock};
 use std::thread;
 use std::time::Duration;
-use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
+use tauri_plugin_autostart::MacosLauncher;
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 use tauri_plugin_notification::NotificationExt;
 use tauri_plugin_opener::OpenerExt;
 use tauri_plugin_updater::UpdaterExt;
 
+mod autostart;
 mod dirs;
 mod logging;
 mod manager;
@@ -363,7 +364,7 @@ impl ModuleEntry {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AutostartConfig {
     pub enabled: bool,
     pub minimized: bool,
@@ -390,7 +391,7 @@ impl Default for UpdatesConfig {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserConfig {
     pub port: u16,
     pub discovery_paths: Vec<PathBuf>,
@@ -813,6 +814,21 @@ fn close_update_progress(app: AppHandle) {
     updater_ui::close_progress_window(&app);
 }
 
+/// Whether the app is registered to start at login, according to the OS.
+#[tauri::command]
+fn get_autostart_enabled(app: AppHandle) -> Result<bool, String> {
+    autostart::is_registered(&app)
+}
+
+/// Registers or unregisters the app for autostart and persists the choice to
+/// the config file. Returns the state read back from the OS.
+#[tauri::command]
+fn set_autostart_enabled(app: AppHandle, enabled: bool) -> Result<bool, String> {
+    let actual = autostart::set_enabled(&app, enabled)?;
+    autostart::sync_menu_item(actual);
+    Ok(actual)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Rotate log if needed (before initializing logging)
@@ -890,29 +906,8 @@ pub fn run() {
                 //TODO: Some of this setup could run concurrently. Could slash a few 100ms in startup?
                 init_app_handle(app.handle().clone());
                 let user_config = get_config();
-                // Get the autostart manager
-                let autostart_manager = app.autolaunch();
-
-                match user_config.autostart.enabled {
-                    true => {
-                        if !autostart_manager
-                            .is_enabled()
-                            .expect("Failed to get autostart state")
-                        {
-                            autostart_manager
-                                .enable()
-                                .expect("Unable to enable autostart");
-                            info!("Registered for autostart: true");
-                        }
-                    }
-                    false => {
-                        //checks for state before disabling no need to check twice
-                        autostart_manager
-                            .disable()
-                            .expect("Unable to disable autosart");
-                        info!("Registered for autostart: false");
-                    }
-                }
+                // Bring the OS login item in line with `[autostart] enabled`.
+                autostart::sync_from_config(app.handle());
 
                 let testing = cli_args.testing;
                 let legacy_import = false;
@@ -1008,9 +1003,13 @@ pub fn run() {
                     .expect("Failed to create open menu item");
                 let quit = MenuItem::with_id(app, "quit", "Quit ActivityWatch", true, None::<&str>)
                     .expect("Failed to create quit menu item");
+                let autostart_item = autostart::build_menu_item(app.handle());
 
-                let menu =
-                    Menu::with_items(app, &[&open, &quit]).expect("Failed to create tray menu");
+                // Placeholder tray menu, replaced by manager::build_tray_menu once
+                // modules are discovered. Kept in sync with it so the toggle is
+                // available even if no modules are ever found.
+                let menu = Menu::with_items(app, &[&open, &autostart_item, &quit])
+                    .expect("Failed to create tray menu");
 
                 #[cfg(not(target_os = "windows"))]
                 let tray_builder = TrayIconBuilder::new()
@@ -1061,6 +1060,8 @@ pub fn run() {
                         app.opener()
                             .reveal_item_in_dir(log_dir)
                             .expect("Failed to open log folder");
+                    } else if event.id().0 == autostart::MENU_ID {
+                        autostart::handle_menu_click(app);
                     } else {
                         // Modules menu clicks
                         let mut state = manager_state
@@ -1183,7 +1184,9 @@ pub fn run() {
             greet,
             open_external,
             restart_app,
-            close_update_progress
+            close_update_progress,
+            get_autostart_enabled,
+            set_autostart_enabled
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

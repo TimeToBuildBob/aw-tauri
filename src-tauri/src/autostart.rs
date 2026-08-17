@@ -1,0 +1,336 @@
+//! User-facing control over "start at login".
+//!
+//! OS-level registration is performed by `tauri-plugin-autostart`; the desired
+//! state is persisted as `[autostart] enabled` in the user config. Those two
+//! must never disagree, so every mutation here goes through [`set_enabled`],
+//! which applies the OS change, verifies it took effect, persists it, and rolls
+//! the OS change back if persisting fails.
+
+use std::path::Path;
+use std::sync::Mutex;
+
+use log::{error, info, warn};
+use tauri::menu::CheckMenuItem;
+use tauri::{AppHandle, Wry};
+use tauri_plugin_autostart::ManagerExt;
+
+use crate::{get_config, get_config_path, write_formatted_config, UserConfig};
+
+/// Menu id of the tray "Start at login" item.
+pub const MENU_ID: &str = "autostart";
+
+/// The tray check item, kept so the checkmark can be restored when a toggle
+/// fails and re-synced when the state changes from elsewhere (e.g. the
+/// `set_autostart_enabled` command). Rebuilt whenever the tray menu is rebuilt.
+static MENU_ITEM: Mutex<Option<CheckMenuItem<Wry>>> = Mutex::new(None);
+
+/// Serializes read-modify-write cycles on the config file so two concurrent
+/// toggles cannot interleave and lose one of the writes.
+static PERSIST_LOCK: Mutex<()> = Mutex::new(());
+
+/// Whether the app is currently registered to start at login, according to the OS.
+pub fn is_registered(app: &AppHandle) -> Result<bool, String> {
+    app.autolaunch()
+        .is_enabled()
+        .map_err(|e| format!("Failed to read autostart state: {e}"))
+}
+
+/// Registers or unregisters the app for autostart and persists the choice.
+///
+/// Returns the state as read back from the OS. Errors leave config and OS
+/// agreeing on the *previous* value rather than a half-applied one.
+pub fn set_enabled(app: &AppHandle, enabled: bool) -> Result<bool, String> {
+    let manager = app.autolaunch();
+    let previous = is_registered(app)?;
+
+    let apply = |value: bool| -> Result<(), String> {
+        let result = if value {
+            manager.enable()
+        } else {
+            manager.disable()
+        };
+        result.map_err(|e| {
+            format!(
+                "Failed to {} autostart: {e}",
+                if value { "enable" } else { "disable" }
+            )
+        })
+    };
+
+    apply(enabled)?;
+
+    // Don't trust the call's Ok(()) — read the OS back so a silent no-op can't
+    // be persisted as success.
+    let actual = is_registered(app)?;
+    if actual != enabled {
+        return Err(format!(
+            "Autostart is still {} after requesting {}",
+            actual, enabled
+        ));
+    }
+
+    if let Err(e) = persist_enabled(enabled) {
+        // Config and OS would now disagree; undo the OS change so they don't.
+        if let Err(rollback_err) = apply(previous) {
+            error!("Failed to roll back autostart after a failed config write: {rollback_err}");
+        }
+        return Err(e);
+    }
+
+    info!("Autostart set to {} (config and OS in sync)", enabled);
+    Ok(actual)
+}
+
+/// Applies `[autostart] enabled` from the config to the OS at startup.
+///
+/// The config is authoritative here — this is what makes a hand-edited config
+/// file take effect — and it is applied in *both* directions, so clearing the
+/// flag also removes an already-registered login item.
+pub fn sync_from_config(app: &AppHandle) {
+    let desired = get_config().autostart.enabled;
+    let current = match is_registered(app) {
+        Ok(current) => current,
+        Err(e) => {
+            warn!("Skipping autostart sync: {e}");
+            return;
+        }
+    };
+
+    if current == desired {
+        info!("Registered for autostart: {desired} (already in sync)");
+        return;
+    }
+
+    let manager = app.autolaunch();
+    let result = if desired {
+        manager.enable()
+    } else {
+        manager.disable()
+    };
+    match result {
+        Ok(()) => info!("Registered for autostart: {desired}"),
+        // A missing/read-only autostart directory shouldn't stop the app from starting.
+        Err(e) => warn!("Failed to set autostart to {desired}: {e}"),
+    }
+}
+
+/// Builds the tray "Start at login" item, checked to match the current OS state.
+pub fn build_menu_item(app: &AppHandle) -> CheckMenuItem<Wry> {
+    let checked = is_registered(app).unwrap_or_else(|e| {
+        warn!("{e}; falling back to the configured value for the tray checkmark");
+        get_config().autostart.enabled
+    });
+    let item = CheckMenuItem::with_id(app, MENU_ID, "Start at login", true, checked, None::<&str>)
+        .expect("Failed to create autostart menu item");
+    *MENU_ITEM.lock().unwrap_or_else(|e| e.into_inner()) = Some(item.clone());
+    item
+}
+
+/// Points the tray checkmark at `checked`, if the tray menu has been built.
+pub fn sync_menu_item(checked: bool) {
+    if let Some(item) = MENU_ITEM.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+        if let Err(e) = item.set_checked(checked) {
+            warn!("Failed to update the autostart tray checkmark: {e}");
+        }
+    }
+}
+
+/// Undoes the checkmark flip that a click performs before the event is handled.
+fn revert_menu_item() {
+    let guard = MENU_ITEM.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(item) = guard.as_ref() else { return };
+    match item.is_checked() {
+        Ok(checked) => {
+            if let Err(e) = item.set_checked(!checked) {
+                warn!("Failed to restore the autostart tray checkmark: {e}");
+            }
+        }
+        Err(e) => warn!("Failed to read the autostart tray checkmark: {e}"),
+    }
+}
+
+/// Handles a click on the tray "Start at login" item.
+///
+/// The new value is derived from the OS state rather than from the check item,
+/// since the item has already flipped itself by the time this runs.
+pub fn handle_menu_click(app: &AppHandle) {
+    let desired = match is_registered(app) {
+        Ok(current) => !current,
+        Err(e) => {
+            error!("{e}");
+            revert_menu_item();
+            report_failure(app, &e);
+            return;
+        }
+    };
+
+    match set_enabled(app, desired) {
+        Ok(actual) => sync_menu_item(actual),
+        Err(e) => {
+            error!("{e}");
+            // The click already flipped the checkmark; put it back.
+            sync_menu_item(!desired);
+            report_failure(app, &e);
+        }
+    }
+}
+
+fn report_failure(app: &AppHandle, message: &str) {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
+
+    app.dialog()
+        .message(format!(
+            "Could not change the start-at-login setting.\n\n{message}"
+        ))
+        .kind(MessageDialogKind::Error)
+        .title("Autostart")
+        .show(|_| {});
+}
+
+/// Writes `enabled` to the `[autostart]` section of the config file.
+///
+/// The file is re-read from disk rather than reusing the config loaded at
+/// startup, so a toggle doesn't revert edits made in the meantime.
+fn persist_enabled(enabled: bool) -> Result<(), String> {
+    let _guard = PERSIST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let path = get_config_path();
+
+    if let Some(updated) = read_and_patch(&path, enabled) {
+        return std::fs::write(&path, updated)
+            .map_err(|e| format!("Failed to write config file {}: {e}", path.display()));
+    }
+
+    // No `[autostart] enabled` to patch (missing or malformed file): fall back
+    // to writing out the config the app is currently running with.
+    let mut config = get_config().clone();
+    config.autostart.enabled = enabled;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to create config dir {}: {e}", parent.display()))?;
+    }
+    write_formatted_config(&config, &path)
+        .map_err(|e| format!("Failed to write config file {}: {e}", path.display()))
+}
+
+/// Reads the config file and returns it with `[autostart] enabled` set to
+/// `enabled`, or `None` if the file can't be read or patched safely.
+fn read_and_patch(path: &Path, enabled: bool) -> Option<String> {
+    let source = std::fs::read_to_string(path).ok()?;
+    let patched = patch_autostart_enabled(&source, enabled)?;
+    // Only accept the surgical edit if the result still parses and actually
+    // holds the requested value; otherwise let the caller rewrite the file.
+    match toml::from_str::<UserConfig>(&patched) {
+        Ok(config) if config.autostart.enabled == enabled => Some(patched),
+        Ok(_) => None,
+        Err(e) => {
+            warn!("Patched config did not parse ({e}); rewriting it instead");
+            None
+        }
+    }
+}
+
+/// Rewrites the `enabled` key of the `[autostart]` table, preserving every
+/// other byte of the document — comments and hand-formatting included.
+///
+/// Returns `None` when there is no such key to replace.
+fn patch_autostart_enabled(source: &str, enabled: bool) -> Option<String> {
+    let mut out = String::with_capacity(source.len() + 8);
+    let mut in_autostart = false;
+    let mut replaced = false;
+
+    for line in source.split_inclusive('\n') {
+        let trimmed = line.trim_start();
+
+        if trimmed.starts_with('[') {
+            let header = match trimmed.find(']') {
+                Some(end) => trimmed[..=end].trim(),
+                None => trimmed.trim_end(),
+            };
+            in_autostart = header == "[autostart]";
+        } else if in_autostart && !replaced {
+            if let Some((key, _)) = trimmed.split_once('=') {
+                if key.trim_end() == "enabled" {
+                    let indent = &line[..line.len() - trimmed.len()];
+                    let newline = if line.ends_with("\r\n") {
+                        "\r\n"
+                    } else if line.ends_with('\n') {
+                        "\n"
+                    } else {
+                        ""
+                    };
+                    out.push_str(indent);
+                    out.push_str(&format!("enabled = {enabled}{newline}"));
+                    replaced = true;
+                    continue;
+                }
+            }
+        }
+
+        out.push_str(line);
+    }
+
+    replaced.then_some(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::patch_autostart_enabled;
+
+    const CONFIG: &str = r#"port = 5600
+discovery_paths = []
+
+[autostart]
+# should I start with the system?
+enabled = true
+minimized = true
+modules = [
+  "aw-watcher-afk",
+]
+
+[updates]
+auto_download = true
+"#;
+
+    #[test]
+    fn patch_flips_the_value_and_keeps_everything_else() {
+        let patched = patch_autostart_enabled(CONFIG, false).expect("should patch");
+        assert!(patched.contains("enabled = false"));
+        assert!(patched.contains("# should I start with the system?"));
+        assert!(patched.contains("minimized = true"));
+        assert!(patched.contains("auto_download = true"));
+        assert_eq!(patched.lines().count(), CONFIG.lines().count());
+    }
+
+    #[test]
+    fn patch_only_touches_the_autostart_table() {
+        let source = "[updates]\nenabled = true\n\n[autostart]\nenabled = true\n";
+        let patched = patch_autostart_enabled(source, false).expect("should patch");
+        assert_eq!(
+            patched,
+            "[updates]\nenabled = true\n\n[autostart]\nenabled = false\n"
+        );
+    }
+
+    #[test]
+    fn patch_handles_indentation_and_a_commented_header() {
+        let source = "[autostart] # tray toggle writes here\n  enabled   =   false\n";
+        let patched = patch_autostart_enabled(source, true).expect("should patch");
+        assert_eq!(
+            patched,
+            "[autostart] # tray toggle writes here\n  enabled = true\n"
+        );
+    }
+
+    #[test]
+    fn patch_reports_a_missing_key() {
+        assert!(patch_autostart_enabled("[autostart]\nminimized = true\n", true).is_none());
+        assert!(patch_autostart_enabled("port = 5600\n", true).is_none());
+    }
+
+    #[test]
+    fn patch_preserves_crlf_line_endings() {
+        let patched =
+            patch_autostart_enabled("[autostart]\r\nenabled = true\r\n", false).expect("patch");
+        assert_eq!(patched, "[autostart]\r\nenabled = false\r\n");
+    }
+}

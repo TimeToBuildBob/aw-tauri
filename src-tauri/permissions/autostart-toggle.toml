@@ -1,0 +1,9 @@
+[[permission]]
+identifier = "allow-get-autostart-enabled"
+description = "Allows reading whether ActivityWatch is registered to start at login."
+commands.allow = ["get_autostart_enabled"]
+
+[[permission]]
+identifier = "allow-set-autostart-enabled"
+description = "Allows enabling or disabling start-at-login for ActivityWatch."
+commands.allow = ["set_autostart_enabled"]
