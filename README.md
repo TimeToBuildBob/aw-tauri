@@ -22,7 +22,7 @@ aw-tauri bundles everything needed to run ActivityWatch into a single applicatio
 - **WebView dashboard** — Opens the aw-webui dashboard in a native window
 - **Crash recovery** — Exponential backoff restart for crashed modules (up to 3 retries)
 - **Single instance** — Only one aw-tauri process runs at a time via lockfile detection
-- **Autostart** — OS-native autostart registration (macOS AppleScript, Linux XDG, Windows registry)
+- **Autostart** — OS-native autostart registration (macOS AppleScript, Linux XDG, Windows registry), toggleable from the tray menu
 - **Cross-platform** — Builds for Linux (deb, rpm, AppImage), macOS (.app), and Windows (MSI) including ARM64
 
 ## Prerequisites
@@ -84,7 +84,7 @@ modules = [
 **Key settings:**
 - `port` — Server port (default: 5600)
 - `discovery_paths` — Additional directories to search for `aw-*` module binaries
-- `autostart.enabled` — Register for OS autostart on login
+- `autostart.enabled` — Register for OS autostart on login. Also toggleable at runtime via **Start at login** in the tray menu, which updates the OS registration *and* writes the new value back here. Editing it by hand takes effect on the next launch, in both directions (setting it to `false` removes an already-registered login item)
 - `autostart.minimized` — Start minimized to tray (if `false`, opens dashboard on launch)
 - `autostart.modules` — Modules to start automatically. Each entry can be a string (`"aw-watcher-afk"`) or an object with args (`{ name = "aw-sync", args = "daemon" }`)
 - `module_args` — Default args by module name, used when a module is launched from the tray menu or restarted after a crash. Lets you set args for a module *without* adding it to `autostart.modules` (e.g. `aw-watcher-vscode` above is launched manually from the tray, but still gets its args). If a module is listed in both places, the inline args on its `autostart.modules` entry take precedence.
@@ -146,6 +146,7 @@ aw-tauri/
 │   │   ├── main.rs        # Entry point — calls lib::run()
 │   │   ├── lib.rs         # Application setup: Tauri builder, server, tray, config
 │   │   ├── manager.rs     # Module manager: discovery, lifecycle, crash recovery
+│   │   ├── autostart.rs   # Start-at-login: OS registration kept in sync with config
 │   │   ├── dirs.rs        # Platform-specific directory resolution
 │   │   └── logging.rs     # Log setup with fern, rotation at 32 MB
 │   ├── build.rs           # Build script — requires AW_WEBUI_DIR env var
@@ -164,9 +165,14 @@ aw-tauri/
 - Config loading from TOML (with first-run defaults)
 - aw-server-rust embedded via `build_rocket()` on an async Tauri runtime
 - WebView window navigated to `http://localhost:{port}/`
-- System tray with Open Dashboard / Modules submenu / Quit
+- System tray with Open Dashboard / Modules submenu / Start at login / Quit
 - Single-instance enforcement via lockfile watching
-- Autostart registration via `tauri-plugin-autostart`
+
+**`autostart.rs`** — Start-at-login control on top of `tauri-plugin-autostart`:
+- Reconciles the OS login item with `[autostart] enabled` at startup, in both directions
+- Backs the **Start at login** tray item and the `get_autostart_enabled` / `set_autostart_enabled` commands
+- Every mutation applies the OS change, reads it back to confirm, then persists it to the config file — rolling the OS change back if the write fails, so the two can't drift apart
+- Persists by patching the `enabled` key in place, preserving comments and formatting elsewhere in the file
 
 **`manager.rs`** — Process manager for ActivityWatch modules:
 - **Discovery**: Scans `PATH` + configured `discovery_paths` for executables matching `aw-*` prefix. On Unix, checks execute permission; on Windows, looks for `.exe` files. Excludes known non-module binaries (aw-tauri, aw-client, aw-server, etc.)

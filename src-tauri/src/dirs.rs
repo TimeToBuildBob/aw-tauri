@@ -33,6 +33,7 @@ pub fn get_config_dir() -> Result<PathBuf, ()> {
 }
 
 #[cfg(not(target_os = "android"))]
+#[allow(dead_code)]
 pub fn get_data_dir() -> Result<PathBuf, ()> {
     let dir = dirs::data_dir()
         .ok_or(())?
@@ -115,7 +116,7 @@ pub fn get_runtime_dir() -> PathBuf {
         let dir = PathBuf::from(runtime_dir)
             .join("activitywatch")
             .join("aw-tauri");
-        if let Ok(_) = fs::create_dir_all(&dir) {
+        if fs::create_dir_all(&dir).is_ok() {
             return dir;
         }
     }

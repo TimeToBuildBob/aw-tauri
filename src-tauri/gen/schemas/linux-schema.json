@@ -561,6 +561,12 @@
           "markdownDescription": "Allows the update progress dialog to be dismissed without restarting."
         },
         {
+          "description": "Allows reading whether ActivityWatch is registered to start at login.",
+          "type": "string",
+          "const": "allow-get-autostart-enabled",
+          "markdownDescription": "Allows reading whether ActivityWatch is registered to start at login."
+        },
+        {
           "description": "Allows the greet command.",
           "type": "string",
           "const": "allow-greet",
@@ -577,6 +583,12 @@
           "type": "string",
           "const": "allow-restart-app",
           "markdownDescription": "Allows the update progress dialog to restart the application after an update is installed."
+        },
+        {
+          "description": "Allows enabling or disabling start-at-login for ActivityWatch.",
+          "type": "string",
+          "const": "allow-set-autostart-enabled",
+          "markdownDescription": "Allows enabling or disabling start-at-login for ActivityWatch."
         },
         {
           "description": "This permission set configures if your\napplication can enable or disable auto\nstarting the application on boot.\n\n#### Granted Permissions\n\nIt allows all to check, enable and\ndisable the automatic start on boot.\n\n\n#### This default permission set includes:\n\n- `allow-enable`\n- `allow-disable`\n- `allow-is-enabled`",

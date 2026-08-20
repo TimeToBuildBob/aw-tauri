@@ -12,6 +12,8 @@
     "dialog:default",
     "opener:default",
     "allow-open-external",
-    "allow-greet"
+    "allow-greet",
+    "allow-get-autostart-enabled",
+    "allow-set-autostart-enabled"
   ]
 }
