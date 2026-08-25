@@ -937,7 +937,13 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_autostart::init(
             MacosLauncher::AppleScript,
-            Some(vec![]),
+            // Pass --profile so the OS login item relaunches the selected
+            // profile, not always `default`.
+            if profile::is_default(&cli_args.profile) {
+                Some(vec![])
+            } else {
+                Some(vec!["--profile", cli_args.profile.as_str()])
+            },
         ))
         .plugin(single_instance_plugin(&cli_args.profile))
         // Serve the module-alert HTML with a valid Origin for the webview.

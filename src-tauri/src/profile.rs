@@ -29,9 +29,9 @@ pub fn validate_profile(name: &str) -> Result<(), String> {
         ));
     }
     let first = name.chars().next().unwrap();
-    if !first.is_ascii_alphanumeric() {
+    if !first.is_ascii_alphabetic() {
         return Err(format!(
-            "profile name must start with a letter or digit, got '{first}'"
+            "profile name must start with a letter, got '{first}'"
         ));
     }
     for c in name.chars() {
@@ -160,7 +160,14 @@ mod tests {
             validate_profile("Research").is_err(),
             "uppercase should be rejected"
         );
-        assert!(validate_profile("-bad").is_err(), "must start with alnum");
+        assert!(
+            validate_profile("-bad").is_err(),
+            "must start with a letter"
+        );
+        assert!(
+            validate_profile("1work").is_err(),
+            "digit-leading profiles produce invalid D-Bus names"
+        );
         assert!(validate_profile("bad name").is_err(), "spaces not allowed");
         assert!(
             validate_profile("a/b").is_err(),
