@@ -154,7 +154,7 @@ fn create_tray_icon(modules: &manager::ModulesSnapshot) -> TrayIcon {
     let mut builder = TrayIconBuilder::new()
         .with_menu(Box::new(menu))
         .with_icon(icon)
-        .with_tooltip("ActivityWatch")
+        .with_tooltip(crate::profile::tray_tooltip(&crate::get_cli_args().profile))
         .with_menu_on_left_click(true);
 
     #[cfg(target_os = "linux")]

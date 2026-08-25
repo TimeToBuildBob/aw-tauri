@@ -58,6 +58,13 @@ aw-tauri reads its config from a TOML file:
 | macOS    | `~/Library/Application Support/activitywatch/aw-tauri/config.toml` |
 | Windows  | `%APPDATA%\activitywatch\aw-tauri\config.toml` |
 
+Named profiles (`--profile research`) isolate config, data, logs and the
+single-instance lock under a sibling appname (`activitywatch-research` instead
+of `activitywatch`). `default` and `testing` keep the paths above so existing
+installs are not orphaned. `--testing` is an alias for `--profile testing`.
+Spawned modules inherit `AW_PROFILE`. Custom profiles take `port` from their
+own config (or `--port`); two instances cannot share 5600.
+
 A default config is generated on first run. Example:
 
 ```toml
@@ -106,6 +113,7 @@ Log rotation happens automatically at 32 MB, keeping the 5 most recent rotated l
 **Environment variables:**
 - `AW_DEBUG=1` — Enable debug-level logging
 - `AW_TRACE=1` — Enable trace-level logging (very verbose)
+- `AW_PROFILE=<name>` — Fallback profile when `--profile` is not passed. The launcher also *exports* this so spawned modules inherit it.
 
 ## Architecture
 
@@ -148,6 +156,7 @@ aw-tauri/
 │   │   ├── manager.rs     # Module manager: discovery, lifecycle, crash recovery
 │   │   ├── autostart.rs   # Start-at-login: OS registration kept in sync with config
 │   │   ├── dirs.rs        # Platform-specific directory resolution
+│   │   ├── profile.rs     # --profile / AW_PROFILE resolution
 │   │   └── logging.rs     # Log setup with fern, rotation at 32 MB
 │   ├── build.rs           # Build script — requires AW_WEBUI_DIR env var
 │   ├── Cargo.toml         # Rust dependencies

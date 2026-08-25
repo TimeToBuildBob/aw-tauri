@@ -34,10 +34,11 @@ All Rust source lives in `src-tauri/src/`:
 
 | File | Responsibility |
 |------|---------------|
-| `main.rs` | Entry point (4 lines — just calls `lib::run()`) |
+| `main.rs` | Entry point — CLI flags, then `lib::run()` |
 | `lib.rs` | Application setup: Tauri builder, embedded server, tray icon, config, window management |
 | `manager.rs` | Module process manager: discovery, start/stop, crash recovery, tray menu updates |
 | `dirs.rs` | Platform-specific paths for config, data, logs, runtime |
+| `profile.rs` | `--profile` / `AW_PROFILE` resolution (same rule as aw-qt and aw-server-rust) |
 | `logging.rs` | Log configuration with `fern`, rotation at 32 MB |
 
 The aw-webui frontend is a git submodule at `aw-webui/`, built separately and served via WebView.
