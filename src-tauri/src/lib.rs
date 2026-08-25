@@ -936,9 +936,13 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_autostart::init(
-            MacosLauncher::AppleScript,
-            // Pass --profile so the OS login item relaunches the selected
-            // profile, not always `default`.
+            // AppleScript login items silently drop extra arguments; LaunchAgent
+            // writes a plist with ProgramArguments so --profile survives relogin.
+            if profile::is_default(&cli_args.profile) {
+                MacosLauncher::AppleScript
+            } else {
+                MacosLauncher::LaunchAgent
+            },
             if profile::is_default(&cli_args.profile) {
                 Some(vec![])
             } else {
