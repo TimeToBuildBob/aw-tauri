@@ -25,16 +25,33 @@ mod logging;
 mod manager;
 mod mini;
 mod module_alert_ui;
+mod profile;
 mod updater_ui;
 
+pub use profile::{export_profile, is_testing, resolve_profile, DEFAULT_PROFILE, TESTING_PROFILE};
+
 /// CLI arguments passed from main()
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct CliArgs {
     pub testing: bool,
     pub verbose: bool,
     pub port: Option<u16>,
     pub daemon: bool,
     pub mini: bool,
+    pub profile: String,
+}
+
+impl Default for CliArgs {
+    fn default() -> Self {
+        Self {
+            testing: false,
+            verbose: false,
+            port: None,
+            daemon: false,
+            mini: false,
+            profile: DEFAULT_PROFILE.to_string(),
+        }
+    }
 }
 
 static CLI_ARGS: OnceLock<CliArgs> = OnceLock::new();
@@ -58,6 +75,59 @@ pub fn set_cli_args(args: CliArgs) {
 
 fn get_cli_args() -> &'static CliArgs {
     CLI_ARGS.get_or_init(CliArgs::default)
+}
+
+fn warn_if_custom_profile_shares_default_port(profile: &str, port: u16) {
+    if !profile::is_default(profile) && !profile::is_testing(profile) && port == 5600 {
+        warn!(
+            "profile '{profile}' is using port 5600; set `port` in its config or pass --port so it can run alongside the default instance"
+        );
+    }
+}
+
+fn log_profile_startup(profile: &str, port: u16) {
+    if profile::is_testing(profile) {
+        info!("Running in testing mode (port {port})");
+    } else if !profile::is_default(profile) {
+        info!("Running with profile '{profile}' (port {port})");
+    }
+    warn_if_custom_profile_shares_default_port(profile, port);
+}
+
+/// Single-instance plugin keyed per profile so named instances can run next to
+/// the default one. On Linux this is a D-Bus name suffix; on Windows/macOS the
+/// plugin still keys off the bundle identifier, so named profiles share that
+/// slot until the plugin grows an identifier override.
+fn single_instance_plugin<R: tauri::Runtime>(profile: &str) -> tauri::plugin::TauriPlugin<R> {
+    let lock_name = profile::lockfile_name(profile);
+    let callback = move |_app: &tauri::AppHandle<R>, _args: Vec<String>, _cwd: String| {
+        let lock_path = get_runtime_path().join(&lock_name);
+        if let Some(parent) = lock_path.parent() {
+            if !parent.exists() {
+                create_dir_all(parent).expect("Failed to create runtime dir");
+            }
+        }
+        let _lock_file = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&lock_path)
+            .expect("Failed to open lock file");
+        info!("Another instance is running, quitting!");
+    };
+
+    #[cfg(target_os = "linux")]
+    {
+        tauri_plugin_single_instance::Builder::new()
+            .callback(callback)
+            .dbus_id(profile::single_instance_dbus_id(profile))
+            .build()
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        tauri_plugin_single_instance::init(callback)
+    }
 }
 
 use log::{error, info, trace, warn};
@@ -255,10 +325,11 @@ fn build_dashboard_url(port: u16, api_key: Option<&str>) -> Url {
 }
 
 pub fn listen_for_lockfile() {
-    thread::spawn(|| {
+    let lock_name = profile::lockfile_name(&get_cli_args().profile);
+    thread::spawn(move || {
         let runtime_path = get_runtime_path();
         loop {
-            let watcher = match SpecificFileWatcher::new(&runtime_path, "single_instance.lock") {
+            let watcher = match SpecificFileWatcher::new(&runtime_path, &lock_name) {
                 Ok(w) => w,
                 Err(e) => {
                     warn!("Failed to create file watcher: {}. Retrying in 2s...", e);
@@ -271,7 +342,7 @@ pub fn listen_for_lockfile() {
                 match watcher.wait_for_file() {
                     Ok(()) => {
                         log::info!("Lock file detected");
-                        remove_file(get_runtime_path().join("single_instance.lock"))
+                        remove_file(get_runtime_path().join(&lock_name))
                             .expect("Failed to remove lock file");
                         let app = &*get_app_handle().lock().expect("Failed to get app handle");
                         if let Some(window) = app.webview_windows().get("main") {
@@ -552,6 +623,7 @@ fn run_daemon() {
         device_id,
     };
 
+    log_profile_startup(&cli_args.profile, port);
     info!("Starting aw-tauri in daemon mode on port {port}");
 
     // Build Tokio runtime first so we can spawn Rocket before starting modules
@@ -649,9 +721,7 @@ pub(crate) fn prepare_aw_server(
         asset_resolver: aw_server::endpoints::AssetResolver::new(asset_path_opt),
         device_id,
     };
-    if testing {
-        info!("Running in testing mode (port {})", port);
-    }
+    log_profile_startup(&cli_args.profile, port);
     let dashboard_api_key = aw_config
         .auth
         .api_key
@@ -866,22 +936,20 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_autostart::init(
-            MacosLauncher::AppleScript,
-            Some(vec![]),
+            // AppleScript login items silently drop extra arguments; LaunchAgent
+            // writes a plist with ProgramArguments so --profile survives relogin.
+            if profile::is_default(&cli_args.profile) {
+                MacosLauncher::AppleScript
+            } else {
+                MacosLauncher::LaunchAgent
+            },
+            if profile::is_default(&cli_args.profile) {
+                Some(vec![])
+            } else {
+                Some(vec!["--profile", cli_args.profile.as_str()])
+            },
         ))
-        .plugin(tauri_plugin_single_instance::init(|_app, _args, _cwd| {
-            let lock_path = get_runtime_path().join("single_instance.lock");
-            if !lock_path.parent().unwrap().exists() {
-                create_dir_all(lock_path.parent().unwrap()).expect("Failed to create runtime dir");
-            }
-            let _lock_file = OpenOptions::new()
-                .create(true)
-                .write(true)
-                .truncate(true)
-                .open(lock_path)
-                .expect("Failed to open lock file");
-            info!("Another instance is running, quitting!");
-        }))
+        .plugin(single_instance_plugin(&cli_args.profile))
         // Serve the module-alert HTML with a valid Origin for the webview.
         .register_uri_scheme_protocol(module_alert_ui::URI_SCHEME, |_ctx, _request| {
             tauri::http::Response::builder()
@@ -956,9 +1024,7 @@ pub fn run() {
                         .show(|_| {});
                     panic!("Port {} is already in use", port);
                 }
-                if testing {
-                    info!("Running in testing mode (port {})", port);
-                }
+                log_profile_startup(&cli_args.profile, port);
                 let dashboard_api_key = aw_config
                     .auth
                     .api_key
@@ -979,7 +1045,7 @@ pub fn run() {
                     "main",
                     tauri::WebviewUrl::External(dashboard_url),
                 )
-                .title("aw-tauri")
+                .title(profile::window_title(&cli_args.profile))
                 .inner_size(800.0, 600.0)
                 .visible(false)
                 .initialization_script(
@@ -1019,7 +1085,8 @@ pub fn run() {
                             .clone(),
                     )
                     .menu(&menu)
-                    .show_menu_on_left_click(true);
+                    .show_menu_on_left_click(true)
+                    .tooltip(profile::tray_tooltip(&cli_args.profile));
 
                 #[cfg(target_os = "windows")]
                 let tray_builder = TrayIconBuilder::new()
@@ -1030,7 +1097,7 @@ pub fn run() {
                     )
                     .menu(&menu)
                     .show_menu_on_left_click(true)
-                    .tooltip("ActivityWatch");
+                    .tooltip(profile::tray_tooltip(&cli_args.profile));
                 let tray = tray_builder.build(app).expect("Failed to create tray");
 
                 init_tray_id(tray.id().clone());

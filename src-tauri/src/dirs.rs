@@ -1,9 +1,33 @@
 //! Directory management for ActivityWatch Tauri
 //!
 //! Supported platforms: Windows, Linux, macOS, Android
+//!
+//! Isolation is at the platformdirs appname root. `default` and `testing`
+//! keep the bare `activitywatch` name so existing installs are not orphaned;
+//! any other profile (`research`, …) gets a sibling root `activitywatch-<p>`.
+//! Module segments (`aw-tauri`, …) do not change.
 
 use std::fs;
 use std::path::PathBuf;
+
+use crate::profile::{current_profile, DEFAULT_PROFILE, TESTING_PROFILE};
+
+/// Platform "appname" root for the current profile.
+#[cfg(not(target_os = "android"))]
+fn appname() -> String {
+    appname_for(&current_profile())
+}
+
+/// `default` and `testing` keep the legacy bare root — existing installs must
+/// not be orphaned. Any other profile gets its own sibling root.
+#[cfg(not(target_os = "android"))]
+fn appname_for(profile: &str) -> String {
+    if profile == DEFAULT_PROFILE || profile == TESTING_PROFILE {
+        "activitywatch".to_string()
+    } else {
+        format!("activitywatch-{profile}")
+    }
+}
 
 #[cfg(target_os = "android")]
 use std::sync::Mutex;
@@ -21,7 +45,7 @@ lazy_static! {
 pub fn get_config_dir() -> Result<PathBuf, ()> {
     let dir = dirs::config_dir()
         .ok_or(())?
-        .join("activitywatch")
+        .join(appname())
         .join("aw-tauri");
     fs::create_dir_all(&dir).expect("Unable to create config dir");
     Ok(dir)
@@ -35,10 +59,7 @@ pub fn get_config_dir() -> Result<PathBuf, ()> {
 #[cfg(not(target_os = "android"))]
 #[allow(dead_code)]
 pub fn get_data_dir() -> Result<PathBuf, ()> {
-    let dir = dirs::data_dir()
-        .ok_or(())?
-        .join("activitywatch")
-        .join("aw-tauri");
+    let dir = dirs::data_dir().ok_or(())?.join(appname()).join("aw-tauri");
     fs::create_dir_all(&dir).expect("Unable to create data dir");
     Ok(dir)
 }
@@ -56,7 +77,7 @@ pub fn get_log_dir() -> Result<PathBuf, ()> {
     // Linux uses cache dir for logs
     let dir = dirs::cache_dir()
         .ok_or(())?
-        .join("activitywatch")
+        .join(appname())
         .join("aw-tauri")
         .join("log");
     fs::create_dir_all(&dir).expect("Unable to create log dir");
@@ -65,10 +86,10 @@ pub fn get_log_dir() -> Result<PathBuf, ()> {
 
 #[cfg(target_os = "windows")]
 pub fn get_log_dir() -> Result<PathBuf, ()> {
-    // Windows: %LOCALAPPDATA%\activitywatch\Logs\aw-tauri
+    // Windows: %LOCALAPPDATA%\<appname>\Logs\aw-tauri
     let dir = dirs::data_local_dir()
         .ok_or(())?
-        .join("activitywatch")
+        .join(appname())
         .join("Logs")
         .join("aw-tauri");
     fs::create_dir_all(&dir).expect("Unable to create log dir");
@@ -81,12 +102,12 @@ pub fn get_log_dir() -> Result<PathBuf, ()> {
     not(target_os = "windows")
 ))]
 pub fn get_log_dir() -> Result<PathBuf, ()> {
-    // macOS: ~/Library/Logs/activitywatch/aw-tauri
+    // macOS: ~/Library/Logs/<appname>/aw-tauri
     let dir = dirs::home_dir()
         .ok_or(())?
         .join("Library")
         .join("Logs")
-        .join("activitywatch")
+        .join(appname())
         .join("aw-tauri");
     fs::create_dir_all(&dir).expect("Unable to create log dir");
     Ok(dir)
@@ -113,9 +134,7 @@ pub fn get_log_path() -> PathBuf {
 pub fn get_runtime_dir() -> PathBuf {
     // Linux: use XDG_RUNTIME_DIR or fallback to cache dir
     if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
-        let dir = PathBuf::from(runtime_dir)
-            .join("activitywatch")
-            .join("aw-tauri");
+        let dir = PathBuf::from(runtime_dir).join(appname()).join("aw-tauri");
         if fs::create_dir_all(&dir).is_ok() {
             return dir;
         }
@@ -123,7 +142,7 @@ pub fn get_runtime_dir() -> PathBuf {
     // Fallback to cache dir
     let dir = dirs::cache_dir()
         .unwrap_or_else(|| PathBuf::from("/tmp"))
-        .join("activitywatch")
+        .join(appname())
         .join("aw-tauri");
     let _ = fs::create_dir_all(&dir);
     dir
@@ -264,5 +283,18 @@ mod tests {
             assert!(config_path.parent().unwrap().exists());
             assert!(log_path.parent().unwrap().exists());
         }
+    }
+
+    #[test]
+    #[cfg(not(target_os = "android"))]
+    fn test_appname_root_isolation() {
+        // default and testing keep the legacy bare root — existing installs
+        // must not be orphaned by this change.
+        assert_eq!(appname_for("default"), "activitywatch");
+        assert_eq!(appname_for("testing"), "activitywatch");
+
+        // any other profile gets its own sibling root
+        assert_eq!(appname_for("research"), "activitywatch-research");
+        assert_eq!(appname_for("my-profile"), "activitywatch-my-profile");
     }
 }

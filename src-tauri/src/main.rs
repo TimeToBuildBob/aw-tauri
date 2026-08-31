@@ -7,9 +7,14 @@ use clap::Parser;
 #[derive(Parser, Debug)]
 #[command(name = "aw-tauri", version, about)]
 struct Cli {
-    /// Run in testing mode (port 5666, separate database)
+    /// Run in testing mode (port 5666, separate database). Alias for --profile testing.
     #[arg(long)]
     testing: bool,
+
+    /// Run an isolated instance under this profile name (data, config, logs
+    /// and lockfile are separate). --testing is an alias for --profile testing.
+    #[arg(long)]
+    profile: Option<String>,
 
     /// Enable verbose/debug logging
     #[arg(short, long)]
@@ -30,12 +35,22 @@ struct Cli {
 
 fn main() {
     let cli = Cli::parse();
+    let profile = match aw_tauri_lib::resolve_profile(cli.profile.as_deref(), cli.testing) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("error: {e}");
+            std::process::exit(2);
+        }
+    };
+    // Modules are spawned as subprocesses and inherit the profile from here.
+    aw_tauri_lib::export_profile(&profile);
     aw_tauri_lib::set_cli_args(aw_tauri_lib::CliArgs {
-        testing: cli.testing,
+        testing: aw_tauri_lib::is_testing(&profile),
         verbose: cli.verbose,
         port: cli.port,
         daemon: cli.daemon,
         mini: cli.mini,
+        profile,
     });
     aw_tauri_lib::run();
 }
