@@ -512,7 +512,7 @@ fn run_daemon() {
         std::process::exit(1);
     }
 
-    let mut aw_config = aw_server::config::create_config(testing);
+    let mut aw_config = aw_server::config::create_config(testing, None);
     aw_config.port = port;
 
     let db_path = match aw_server::dirs::db_path(testing) {
@@ -547,7 +547,7 @@ fn run_daemon() {
     };
 
     let server_state = aw_server::endpoints::ServerState {
-        datastore: Mutex::new(aw_datastore::Datastore::new(db_path, false)),
+        datastore: aw_datastore::Datastore::new(db_path, false),
         asset_resolver: aw_server::endpoints::AssetResolver::new(asset_path_opt),
         device_id,
     };
@@ -608,7 +608,7 @@ pub(crate) fn prepare_aw_server(
     let testing = cli_args.testing;
     let legacy_import = false;
 
-    let mut aw_config = aw_server::config::create_config(testing);
+    let mut aw_config = aw_server::config::create_config(testing, None);
 
     // Port priority: CLI flag > testing default (5666) > config file
     let port = cli_args
@@ -645,7 +645,7 @@ pub(crate) fn prepare_aw_server(
     };
 
     let server_state = ServerState {
-        datastore: Mutex::new(aw_datastore::Datastore::new(db_path, legacy_import)),
+        datastore: aw_datastore::Datastore::new(db_path, legacy_import),
         asset_resolver: aw_server::endpoints::AssetResolver::new(asset_path_opt),
         device_id,
     };
@@ -912,7 +912,7 @@ pub fn run() {
                 let testing = cli_args.testing;
                 let legacy_import = false;
 
-                let mut aw_config = aw_server::config::create_config(testing);
+                let mut aw_config = aw_server::config::create_config(testing, None);
 
                 // Port priority: CLI flag > testing default (5666) > config file
                 let port = cli_args
@@ -944,7 +944,7 @@ pub fn run() {
                 let server_state = aw_server::endpoints::ServerState {
                     // Even if legacy_import is set to true it is disabled on Android so
                     // it will not happen there
-                    datastore: Mutex::new(aw_datastore::Datastore::new(db_path, legacy_import)),
+                    datastore: aw_datastore::Datastore::new(db_path, legacy_import),
                     asset_resolver: aw_server::endpoints::AssetResolver::new(asset_path_opt),
                     device_id,
                 };
