@@ -96,7 +96,7 @@ jobs:
           PY
 
       - name: Build the app
-        uses: tauri-apps/tauri-action@v0
+        uses: tauri-apps/tauri-action@v1
 
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -106,7 +106,7 @@ jobs:
           tagName: ${{ github.ref_name }} # This only works if your workflow triggers on new tags.
           releaseName: 'aw-tauri v__VERSION__' # tauri-action replaces \_\_VERSION\_\_ with the app version.
           releaseBody: 'See the assets to download and install this version.'
-          releaseDraft: true
+          releaseDraft: false
           prerelease: false
-          includeUpdaterJson: ${{ env.HAS_TAURI_SIGNING_KEY }}
+          uploadUpdaterJson: ${{ env.HAS_TAURI_SIGNING_KEY }}
           args: ${{ matrix.args }}
