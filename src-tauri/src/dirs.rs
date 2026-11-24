@@ -155,11 +155,24 @@ pub fn get_log_path() -> PathBuf {
         .join("aw-tauri.log")
 }
 
+/// An XDG base directory from `var`, or `None` when unset, empty or relative.
+///
+/// The [XDG Base Directory spec] says relative paths are invalid and must be
+/// ignored; using one resolves it against the current directory.
+///
+/// [XDG Base Directory spec]: https://specifications.freedesktop.org/basedir-spec/latest/
+#[cfg(target_os = "linux")]
+fn xdg_env_dir(var: &str) -> Option<PathBuf> {
+    std::env::var_os(var)
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+}
+
 #[cfg(target_os = "linux")]
 pub fn get_runtime_dir() -> PathBuf {
     // Linux: use XDG_RUNTIME_DIR or fallback to cache dir
-    if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
-        let dir = PathBuf::from(runtime_dir).join(appname()).join("aw-tauri");
+    if let Some(runtime_dir) = xdg_env_dir("XDG_RUNTIME_DIR") {
+        let dir = runtime_dir.join(appname()).join("aw-tauri");
         if fs::create_dir_all(&dir).is_ok() {
             return dir;
         }
@@ -325,9 +338,8 @@ pub fn get_discovery_paths() -> Vec<PathBuf> {
             discovery_paths.push(home_path.join(".local").join("bin")); // ~/.local/bin (modern XDG)
 
             // XDG_DATA_HOME or ~/.local/share (user data)
-            let data_dir = std::env::var("XDG_DATA_HOME")
-                .map(PathBuf::from)
-                .unwrap_or_else(|_| home_path.join(".local").join("share"));
+            let data_dir = xdg_env_dir("XDG_DATA_HOME")
+                .unwrap_or_else(|| home_path.join(".local").join("share"));
             discovery_paths.push(
                 data_dir
                     .join("activitywatch")
@@ -383,6 +395,25 @@ pub fn set_android_data_dir(path: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Unique variable names: other tests read the real XDG variables.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn xdg_env_dir_ignores_unset_empty_and_relative_values() {
+        let var = |suffix: &str| format!("AW_TAURI_TEST_XDG_DIR_{suffix}_{}", std::process::id());
+        let (unset, empty, relative, absolute) =
+            (var("UNSET"), var("EMPTY"), var("RELATIVE"), var("ABSOLUTE"));
+        std::env::set_var(&empty, "");
+        std::env::set_var(&relative, "rel/data");
+        std::env::set_var(&absolute, "/xdg/data");
+        assert_eq!(xdg_env_dir(&unset), None);
+        assert_eq!(xdg_env_dir(&empty), None);
+        assert_eq!(xdg_env_dir(&relative), None);
+        assert_eq!(xdg_env_dir(&absolute), Some(PathBuf::from("/xdg/data")));
+        for name in [empty, relative, absolute] {
+            std::env::remove_var(name);
+        }
+    }
 
     #[test]
     fn test_get_dirs() {

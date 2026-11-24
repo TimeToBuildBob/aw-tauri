@@ -554,6 +554,16 @@ pub fn handle_first_run() {
     }
 }
 
+/// Show `dir` in the file manager. A failure is logged, not a panic: without a
+/// FileManager1 service or the OpenURI portal (common on minimal Linux
+/// desktops) the opener returns an error, and a panic here would quit the app
+/// from a tray click.
+fn reveal_folder(dir: &std::path::Path, what: &str) {
+    if let Err(e) = tauri_plugin_opener::reveal_item_in_dir(dir) {
+        warn!("Failed to open {what} folder {}: {e}", dir.display());
+    }
+}
+
 fn build_dashboard_url(port: u16, api_key: Option<&str>) -> Url {
     let mut url =
         Url::parse(&format!("http://localhost:{port}/")).expect("Failed to parse localhost url");
@@ -1483,15 +1493,11 @@ pub fn run() {
                     } else if event.id().0 == "config_folder" {
                         let config_path = get_config_path();
                         let config_dir = config_path.parent().unwrap_or(&config_path);
-                        app.opener()
-                            .reveal_item_in_dir(config_dir)
-                            .expect("Failed to open config folder");
+                        reveal_folder(config_dir, "config");
                     } else if event.id().0 == "log_folder" {
                         let log_path = logging::get_log_path();
                         let log_dir = log_path.parent().unwrap_or(&log_path);
-                        app.opener()
-                            .reveal_item_in_dir(log_dir)
-                            .expect("Failed to open log folder");
+                        reveal_folder(log_dir, "log");
                     } else if event.id().0 == manager::SUPPORT_ID {
                         if let Err(e) = app.opener().open_url(manager::SUPPORT_URL, None::<&str>) {
                             warn!("Failed to open support page: {}", e);
@@ -1643,8 +1649,22 @@ pub fn run() {
 mod tests {
     use super::{
         already_running_message, build_dashboard_url, default_linux_modules,
-        rejected_launch_message,
+        rejected_launch_message, reveal_folder,
     };
+
+    // Linux only: elsewhere a reachable file manager would really open.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn reveal_folder_without_a_file_manager_does_not_panic() {
+        std::env::set_var(
+            "DBUS_SESSION_BUS_ADDRESS",
+            "unix:path=/nonexistent/aw-tauri-test-bus",
+        );
+        // The opener itself fails here; the tray handler used to `.expect()` it.
+        assert!(tauri_plugin_opener::reveal_item_in_dir(std::env::temp_dir()).is_err());
+        reveal_folder(&std::env::temp_dir(), "test");
+        std::env::remove_var("DBUS_SESSION_BUS_ADDRESS");
+    }
 
     #[test]
     fn already_running_message_names_the_version_and_the_executable() {
